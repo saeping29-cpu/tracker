@@ -6,7 +6,7 @@ import android.graphics.Path
 import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.WindowManager
-import android.graphics.PixelForm
+import android.graphics.PixelFormat
 class AutoTapService : AccessibilityService() {
     companion object {
         @Volatile var instance: AutoTapService? = null
