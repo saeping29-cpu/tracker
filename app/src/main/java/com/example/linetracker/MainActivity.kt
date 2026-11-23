@@ -1,315 +1,148 @@
-
 package com.example.linetracker
 
 import android.app.Activity
-import android.media.projection.MediaProjectionManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.EditText
-import android.widget.ScrollView
 import android.provider.Settings
-import android.widget.Toast
+import android.view.Gravity
+import android.widget.*
 
 class MainActivity : Activity() {
-
     private val captureRequest = 1001
-
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private lateinit var xInput: EditText
     private lateinit var yInput: EditText
     private lateinit var regionInputs: List<EditText>
     private lateinit var targetInputs: List<EditText>
+    private lateinit var timingInput: EditText
+    private lateinit var sideButton: Button
+    private var side = "right"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        // Landscape UI. CaptureService also reads the current screen dimensions at start.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(36, 50, 36, 30)
+            setPadding(32, 20, 32, 28)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-
-        root.addView(TextView(this).apply {
-            text = "LineTracker · Ball AutoTap"
-            textSize = 26f
-        })
-
-        root.addView(TextView(this).apply {
-            text = "밝은 야구공을 추적해 지정한 접촉 영역에 닿으면 자동 터치합니다. 먼저 공이 지나가는 작은 탐색 영역과 접촉 영역을 각각 그려주세요. 실험용 추적기이며 오탐 가능성이 있습니다."
-            textSize = 16f
-            setPadding(0, 30, 0, 30)
-        })
-
-        root.addView(TextView(this).apply {
-            text = "터치 위치: 화면 왼쪽 위 기준 X/Y 비율(0~100). 예: 중앙은 50, 50"
-        })
-
-        xInput = EditText(this).apply {
-            hint = "X (%)"
-            setText("50")
-            inputType = 2
-        }
-
-        yInput = EditText(this).apply {
-            hint = "Y (%)"
-            setText("50")
-            inputType = 2
-        }
-
-        root.addView(xInput)
-        root.addView(yInput)
-
-        root.addView(TextView(this).apply {
-            text = "공 탐색 범위 (가능한 좁게): 왼쪽, 위, 오른쪽, 아래"
-            setPadding(0, 20, 0, 8)
-        })
-
-        regionInputs = listOf(
-            "왼쪽 X (%)" to "30",
-            "위쪽 Y (%)" to "40",
-            "오른쪽 X (%)" to "70",
-            "아래쪽 Y (%)" to "60"
-        ).map { (hintText, default) ->
-            EditText(this).apply {
+        fun label(value: String) { root.addView(TextView(this).apply { text = value; textSize = 16f; setPadding(0, 12, 0, 6) }) }
+        fun field(hintText: String, default: String, signed: Boolean = false): EditText {
+            return EditText(this).apply {
                 hint = hintText
                 setText(default)
-                inputType = 2
+                inputType = if (signed) android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED else android.text.InputType.TYPE_CLASS_NUMBER
                 root.addView(this)
             }
         }
-
-        root.addView(Button(this).apply {
-            text = "공 탐색 범위 그리기"
-            setOnClickListener {
-                openSelector("region")
-            }
-        })
-
-        root.addView(TextView(this).apply {
-            text = "공이 닿으면 타격할 선/면 (아주 얇은 사각형 = 선)"
-        })
-
-        targetInputs = listOf(
-            "접촉 왼쪽" to "45",
-            "접촉 위" to "48",
-            "접촉 오른쪽" to "55",
-            "접촉 아래" to "52"
-        ).map { (hintText, default) ->
-            EditText(this).apply {
-                hint = hintText
-                setText(default)
-                inputType = 2
-                root.addView(this)
-            }
+        label("LineTracker · 좌타/우타 · 가로 화면")
+        sideButton = Button(this)
+        root.addView(sideButton)
+        sideButton.setOnClickListener {
+            saveSide()
+            side = if (side == "right") "left" else "right"
+            prefs.edit().putString("selected_side", side).apply()
+            loadSide()
         }
-
-        root.addView(Button(this).apply {
-            text = "접촉 선/면 그리기"
-            setOnClickListener {
-                openSelector("target")
-            }
-        })
-
-        root.addView(Button(this).apply {
-            text = "화면에서 터치 위치 찍기"
-            setOnClickListener {
-                openSelector("tap")
-            }
-        })
-
-        val prefs = getSharedPreferences(
-            "settings",
-            MODE_PRIVATE
-        )
-
-        prefs.getString("region", null)
-            ?.split(",")
-            ?.takeIf { it.size == 4 }
-            ?.forEachIndexed { i, v ->
-                regionInputs[i].setText(v)
-            }
-
-        prefs.getString("target", null)
-            ?.split(",")
-            ?.takeIf { it.size == 4 }
-            ?.forEachIndexed { i, v ->
-                targetInputs[i].setText(v)
-            }
-
-        prefs.getString("tap", null)
-            ?.split(",")
-            ?.takeIf { it.size == 2 }
-            ?.let {
-                xInput.setText(it[0])
-                yInput.setText(it[1])
-            }
-
-        root.addView(Button(this).apply {
-            text = "자동 터치 접근성 권한 설정"
-            setOnClickListener {
-                startActivity(
-                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                )
-            }
-        })
-
+        label("자동 터치 좌표 X/Y (%)")
+        xInput = field("터치 X", "50")
+        yInput = field("터치 Y", "50")
+        label("공 탐색 범위: 왼쪽 / 위 / 오른쪽 / 아래 (%)")
+        regionInputs = listOf("왼쪽" to "30", "위" to "40", "오른쪽" to "70", "아래" to "60")
+            .map { field(it.first, it.second) }
+        root.addView(Button(this).apply { text = "공 탐색 범위 그리기"; setOnClickListener { openSelector("region") } })
+        label("접촉 영역: 왼쪽 / 위 / 오른쪽 / 아래 (%)")
+        targetInputs = listOf("왼쪽" to "45", "위" to "48", "오른쪽" to "55", "아래" to "52")
+            .map { field(it.first, it.second) }
+        root.addView(Button(this).apply { text = "접촉 선/면 그리기"; setOnClickListener { openSelector("target") } })
+        root.addView(Button(this).apply { text = "화면에서 터치 위치 찍기"; setOnClickListener { openSelector("tap") } })
+        label("타이밍 보정 (ms): 음수 = 예측으로 빠르게 / 양수 = 늦게, -150 ~ +150")
+        timingInput = field("보정 ms", "0", true)
+        root.addView(Button(this).apply { text = "현재 타석 설정 저장"; setOnClickListener { saveSide(); Toast.makeText(this@MainActivity, "설정 저장 완료", Toast.LENGTH_SHORT).show() } })
+        root.addView(Button(this).apply { text = "자동 터치 접근성 권한 설정"; setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } })
         root.addView(Button(this).apply {
             text = "화면 추적 시작"
             setOnClickListener {
-                val mgr = getSystemService(
-                    Context.MEDIA_PROJECTION_SERVICE
-                ) as MediaProjectionManager
-
-                startActivityForResult(
-                    mgr.createScreenCaptureIntent(),
-                    captureRequest
-                )
+                saveSide()
+                // A projection permission token is single-use. Stop old session before requesting another.
+                stopService(Intent(this@MainActivity, CaptureService::class.java))
+                val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                startActivityForResult(manager.createScreenCaptureIntent(), captureRequest)
             }
         })
+        root.addView(Button(this).apply { text = "추적 중지"; setOnClickListener { stopService(Intent(this@MainActivity, CaptureService::class.java)) } })
+        label("가로 화면 기준으로 좌표를 저장합니다. 타석/좌표 변경 시 추적을 다시 시작하세요. 음수 보정은 이동 예측이 가능한 경우에만 작동합니다.")
+        side = prefs.getString("selected_side", "right") ?: "right"
+        loadSide()
+        setContentView(ScrollView(this).apply { isFillViewport = true; addView(root) })
+    }
 
-        root.addView(Button(this).apply {
-            text = "추적 중지"
-            setOnClickListener {
-                stopService(
-                    Intent(
-                        this@MainActivity,
-                        CaptureService::class.java
-                    )
-                )
-            }
-        })
+    private fun key(name: String) = "${side}_$name"
+    private fun fields(fields: List<EditText>, defaults: IntArray): IntArray =
+        fields.mapIndexed { index, edit -> (edit.text.toString().toIntOrNull() ?: defaults[index]).coerceIn(0, 100) }.toIntArray()
 
-        root.addView(TextView(this).apply {
-            text = "추적 결과는 알림에 표시됩니다. 다른 앱을 연 상태에서도 캡처는 계속될 수 있지만, 보안 보호 화면은 분석할 수 없습니다."
-            setPadding(0, 28, 0, 0)
-        })
+    private fun saveSide() {
+        val region = fields(regionInputs, intArrayOf(30,40,70,60))
+        val target = fields(targetInputs, intArrayOf(45,48,55,52))
+        val tap = fields(listOf(xInput,yInput), intArrayOf(50,50))
+        val timing = (timingInput.text.toString().toIntOrNull() ?: 0).coerceIn(-150, 150)
+        prefs.edit().putString(key("region"), region.joinToString(","))
+            .putString(key("target"), target.joinToString(","))
+            .putString(key("tap"), tap.joinToString(","))
+            .putInt(key("timing"), timing).apply()
+    }
 
-        // 화면 전체를 스크롤할 수 있도록 변경
-        val scrollView = ScrollView(this).apply {
-            isFillViewport = true
-            isVerticalScrollBarEnabled = true
-            addView(root)
+    private fun loadSide() {
+        sideButton.text = if (side == "right") "현재: 우타  (누르면 좌타)" else "현재: 좌타  (누르면 우타)"
+        fun restore(name: String, inputs: List<EditText>, defaults: List<String>) {
+            // For migration, right-handed mode inherits previous single-mode settings.
+            val old = if (side == "right") prefs.getString(name, null) else null
+            val saved = prefs.getString(key(name), old)?.split(",")
+            inputs.forEachIndexed { index, input -> input.setText(saved?.getOrNull(index) ?: defaults[index]) }
         }
-
-        setContentView(scrollView)
+        restore("region", regionInputs, listOf("30","40","70","60"))
+        restore("target", targetInputs, listOf("45","48","55","52"))
+        restore("tap", listOf(xInput,yInput), listOf("50","50"))
+        timingInput.setText(prefs.getInt(key("timing"), 0).toString())
     }
 
     private fun openSelector(mode: String) {
         val service = AutoTapService.instance
-
         if (service == null) {
-            Toast.makeText(
-                this,
-                "먼저 자동 터치 접근성 서비스를 켜주세요",
-                Toast.LENGTH_LONG
-            ).show()
+            Toast.makeText(this, "먼저 접근성 서비스를 켜주세요", Toast.LENGTH_LONG).show()
             return
         }
-
         service.select(mode) { result ->
             if (result != null) {
-
-                if (mode == "region") {
-                    regionInputs.forEachIndexed { i, field ->
-                        field.setText(result[i].toString())
-                    }
-                } else if (mode == "target") {
-                    targetInputs.forEachIndexed { i, field ->
-                        field.setText(result[i].toString())
-                    }
-                } else {
-                    xInput.setText(result[0].toString())
-                    yInput.setText(result[1].toString())
+                when (mode) {
+                    "region" -> regionInputs.forEachIndexed { i, e -> result.getOrNull(i)?.let { e.setText(it.toString()) } }
+                    "target" -> targetInputs.forEachIndexed { i, e -> result.getOrNull(i)?.let { e.setText(it.toString()) } }
+                    "tap" -> { result.getOrNull(0)?.let { xInput.setText(it.toString()) }; result.getOrNull(1)?.let { yInput.setText(it.toString()) } }
                 }
-
-                getSharedPreferences(
-                    "settings",
-                    MODE_PRIVATE
-                ).edit().apply {
-                    if (mode == "region" || mode == "target") {
-                        putString(
-                            mode,
-                            result.joinToString(",")
-                        )
-                    } else {
-                        putString(
-                            "tap",
-                            result.joinToString(",")
-                        )
-                    }
-                }.apply()
-
-                Toast.makeText(
-                    this,
-                    "위치 저장 완료",
-                    Toast.LENGTH_SHORT
-                ).show()
+                saveSide()
+                Toast.makeText(this, "${if(side == "right") "우타" else "좌타"} 좌표 저장 완료", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     @Deprecated("Deprecated in Java")
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
-        super.onActivityResult(
-            requestCode,
-            resultCode,
-            data
-        )
-
-        if (
-            requestCode == captureRequest &&
-            resultCode == RESULT_OK &&
-            data != null
-        ) {
-            val x = (
-                xInput.text.toString().toIntOrNull() ?: 50
-            ).coerceIn(0, 100)
-
-            val y = (
-                yInput.text.toString().toIntOrNull() ?: 50
-            ).coerceIn(0, 100)
-
-            val values = regionInputs.mapIndexed { index, field ->
-                (
-                    field.text.toString().toIntOrNull()
-                        ?: listOf(30, 40, 70, 60)[index]
-                ).coerceIn(0, 100)
-            }
-
-            val target = targetInputs.mapIndexed { index, field ->
-                (
-                    field.text.toString().toIntOrNull()
-                        ?: listOf(45, 48, 55, 52)[index]
-                ).coerceIn(0, 100)
-            }
-
-            val serviceIntent = Intent(
-                this,
-                CaptureService::class.java
-            ).apply {
-                putExtra("resultCode", resultCode)
-                putExtra("projectionData", data)
-                putExtra("tapX", x)
-                putExtra("tapY", y)
-                putExtra("region", values.toIntArray())
-                putExtra("target", target.toIntArray())
-            }
-
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != captureRequest || resultCode != RESULT_OK || data == null) return
+        val tap = fields(listOf(xInput,yInput), intArrayOf(50,50))
+        val intent = Intent(this, CaptureService::class.java).apply {
+            putExtra("resultCode", resultCode)
+            putExtra("projectionData", data)
+            putExtra("tapX", tap[0]); putExtra("tapY", tap[1])
+            putExtra("region", fields(regionInputs, intArrayOf(30,40,70,60)))
+            putExtra("target", fields(targetInputs, intArrayOf(45,48,55,52)))
+            putExtra("timingMs", (timingInput.text.toString().toIntOrNull() ?: 0).coerceIn(-150,150))
         }
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
     }
 }
-
