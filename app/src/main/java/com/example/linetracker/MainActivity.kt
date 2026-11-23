@@ -191,7 +191,7 @@ class MainActivity : Activity() {
 
         // 화면 전체를 스크롤할 수 있도록 변경
         val scrollView = ScrollView(this).apply {
-            isfillViewport = true
+            isFillViewport = true
             isVerticalScrollBarEnabled = true
             addView(root)
         }
