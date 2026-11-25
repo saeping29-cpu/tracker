@@ -6,7 +6,7 @@ import android.view.View
 
  data class TraceFrame(val width: Int, val height: Int, val roi: IntArray, val target: IntArray,
     val point: BallTracker.Point?, val trail: List<BallTracker.Point>, val status: String,
-    val contact: Boolean, val frames: Long, val candidates: Int, val launch: IntArray = intArrayOf(35,25,65,55))
+    val contact: Boolean, val frames: Long, val candidates: Int, val launch: IntArray = intArrayOf(35,25,65,55), val debugCandidates: List<BallTracker.Point> = emptyList())
 
 class TraceOverlay(context: Context) : View(context) {
     var frame: TraceFrame? = null
@@ -26,7 +26,7 @@ class TraceOverlay(context: Context) : View(context) {
             area(f.launch, Color.rgb(175,60,255)); area(f.roi, Color.rgb(0,150,255)); area(f.target, Color.rgb(255,45,45))
             p.color = Color.rgb(255,190,0); p.pathEffect = DashPathEffect(floatArrayOf(9f,7f),0f)
             for (i in 1 until f.trail.size) { val a=f.trail[i-1]; val b=f.trail[i]; c.drawLine(a.x,a.y,b.x,b.y,p) }
-            p.pathEffect = null; p.color = Color.rgb(0,255,80)
+            p.pathEffect = null; p.color = Color.WHITE; for(q in f.debugCandidates) c.drawCircle(q.x,q.y,maxOf(3f,q.radius),p); p.color = Color.rgb(0,255,80)
             f.point?.let { q -> val r = maxOf(12f,q.radius+5f); c.drawCircle(q.x,q.y,r,p); c.drawLine(q.x-r-5,q.y,q.x+r+5,q.y,p); c.drawLine(q.x,q.y-r-5,q.x,q.y+r+5,p) }
             p.style = Paint.Style.FILL; p.color = Color.argb(190,0,0,0); c.drawRect(8f,8f,minOf(f.width-8f,850f),72f,p)
             p.color = Color.rgb(0,255,80); p.textSize = 24f

@@ -8,6 +8,8 @@ class BallTracker {
     private data class Blob(val x: Float, val y: Float, val radius: Float, val pixels: Int)
     data class Point(val x: Float, val y: Float, val radius: Float)
     var point: Point? = null; private set
+    var debugCandidates = emptyList<Point>(); private set
+    var rejectedCount = 0; private set
     var candidateCount = 0; private set
     var contact = false; private set
     private var previous: Blob? = null
@@ -30,7 +32,7 @@ class BallTracker {
     var status = "공 탐색 중"; private set
 
     fun process(image: Image, roi: IntArray, target: IntArray, lineMode: Boolean, now: Long, timingMs: Int = 0): Boolean {
-        point = null; candidateCount = 0; contact = false
+        point = null; candidateCount = 0; rejectedCount = 0; debugCandidates = emptyList(); contact = false
         val w = image.width
         val h = image.height
         if (w <= 0 || h <= 0 || roi.size < 4 || target.size < 4) {
@@ -94,13 +96,14 @@ class BallTracker {
             }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
-            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 2..900 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
-                tail.toFloat() / (bw * bh) > .25f) {
+            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 2..180 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 2.1f &&
+                tail.toFloat() / (bw * bh) > .42f && max(bw,bh) <= 20) {
                 candidates.add(Blob(l + sumX.toFloat() / tail * step,
                     t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail))
-            }
+            } else if (changed > 0) rejectedCount++
         }
         candidateCount = candidates.size
+        debugCandidates = candidates.take(40).map { Point(it.x,it.y,it.radius) }
         val prev = previous
         val dtTrack = (now - previousTime).coerceIn(1L, 150L).toFloat()
         val selected = if (prev == null) {
@@ -108,15 +111,15 @@ class BallTracker {
                 val inLaunch = p.x in (min(launch[0],launch[2])*w/100f)..(max(launch[0],launch[2])*w/100f) && p.y in (min(launch[1],launch[3])*h/100f)..(max(launch[1],launch[3])*h/100f)
                 if (!inLaunch) return@any false
                 val d = hypot(q.x-p.x,q.y-p.y)
-                d >= 2f && d <= max(w,h)*.06f && abs(q.radius-p.radius) <= max(4f,p.radius)
+                d >= 3f && d <= max(w,h)*.12f && q.y >= p.y-12f && p.radius <= 8f && abs(q.radius-p.radius) <= max(4f,p.radius)
             } }.minByOrNull { it.pixels }
         } else {
             val px = prev.x + vx*dtTrack
             val py = prev.y + vy*dtTrack
             candidates.filter { q ->
                 hypot(q.x-prev.x,q.y-prev.y) >= 1.5f &&
-                hypot(q.x-px,q.y-py) <= max(12f,max(w,h)*.025f + missing*8f) &&
-                abs(q.radius-prev.radius) <= max(5f,prev.radius)
+                hypot(q.x-px,q.y-py) <= max(12f,max(w,h)*.045f + missing*15f) &&
+                abs(q.radius-prev.radius) <= max(6f,prev.radius*1.5f) && q.y >= prev.y-20f
             }.minByOrNull { hypot(it.x-px,it.y-py) + abs(it.radius-prev.radius)*2f }
         }
         lastCandidates = candidates

@@ -59,7 +59,9 @@ class CaptureService : Service() {
     private var pitchOnly = true
     private var battingGate = false
     private val battingDetector = BattingScreenDetector()
-    private var batting = true
+    private var batting = false
+    private var gateCleared = false
+    private var lastScreenLog = false
     private var lastBattingCheck = 0L
     private var bitrate = 2000000
     private var captureCount = 0
@@ -223,8 +225,8 @@ class CaptureService : Service() {
         if (!allowed) {
             if (unknownSince == 0L) unknownSince = now
             // Never collect unverified screens. Keep encoder alive briefly on transient unknown state.
-            if (active.isNotBlank() || now - unknownSince >= 1500L) {
-                tracker.reset(); trail.clear(); lastPitch = -10000L
+            if ((active.isNotBlank() || now - unknownSince >= 1500L) && !gateCleared) {
+                gateCleared=true; tracker.reset(); trail.clear(); lastPitch = -10000L
                 pitchDetector.reset(); pitchUntil = 0L
                 videoHandler.post { closeVideo("app gate $state"); clearPreRoll(); wasRecording=false }
                 mainHandler.post { if (!stopped) AutoTapService.instance?.hideTrace() }
@@ -237,16 +239,18 @@ class CaptureService : Service() {
         }
         unknownSince = 0L
         captureCount++
-        if (battingGate && now-lastBattingCheck>=200L) { lastBattingCheck=now; batting=battingDetector.matches(image) }
-        if (battingGate && !batting) {
+        if ((battingGate || pitchOnly) && now-lastBattingCheck>=100L) { lastBattingCheck=now; batting=battingDetector.matches(image) }
+        if ((battingGate || pitchOnly) && !batting) {
             tracker.reset(); pitchDetector.reset(); trail.clear(); pitchUntil=0L
-            videoHandler.post { closeVideo("batting gate"); clearPreRoll(); wasRecording=false }
-            mainHandler.post { if(!stopped) AutoTapService.instance?.hideTrace() }
+            if (!gateCleared) { videoHandler.post { closeVideo("batting gate"); clearPreRoll(); wasRecording=false }; diagnostic("screen rejected"); gateCleared=true }
+            if (showOverlay && now-lastOverlay>=150L) { lastOverlay=now; val waiting=TraceFrame(image.width,image.height,region,target,null,emptyList(),"WAIT / 타격 화면 대기",false,frames,0,tracker.launch); mainHandler.post { if(!stopped) AutoTapService.instance?.showTrace(waiting) } }
             return
         }
-        if (now-lastAnalysis < 32L) return
+        gateCleared=false
+        if (now-lastAnalysis < 30L) return
         lastAnalysis = now
-        val hit = tracker.process(image, region, target, false, now, timingMs)
+        val analysisStart = SystemClock.elapsedRealtimeNanos()
+        val rawHit = tracker.process(image, region, target, false, now, timingMs)
         frames++
         fpsFrames++
         if (fpsStart == 0L) fpsStart = now
@@ -254,11 +258,13 @@ class CaptureService : Service() {
         val point = tracker.point
         if(point!=null) lastPitch=now
         val confirmed = pitchDetector.update(image, point, now)
-        if (confirmed) pitchUntil = now + 1600L
+        if (confirmed) { pitchUntil = now + 1250L; diagnostic("pitch confirmed frame=$frames") }
+        val hit = rawHit && now<=pitchUntil
+        val validContact = tracker.contact && now<=pitchUntil
         
         if (now - lastPointTime > 250L) trail.clear()
         if (point != null) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
-        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch)
+        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / CAP $captureFps / TRACK $actualFps / REC $videoFpsActual",validContact,frames,tracker.candidateCount,tracker.launch,tracker.debugCandidates)
         if (showOverlay && now-lastOverlay >= 50L) {
             lastOverlay = now
             mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
@@ -269,8 +275,12 @@ class CaptureService : Service() {
             if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
-            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${tracker.contact},$showOverlay\n")
+            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
             if (samples.length >= 8192) { file.appendText(samples.toString()); samples.clear() }
+        }
+        if (frames % 5L == 0L) {
+            val details = tracker.debugCandidates.joinToString(";") { "${it.x.toInt()}:${it.y.toInt()}:${it.radius}" }
+            diagnostic("frame=$frames batting=$batting pitch=${now<=pitchUntil} rejected=${tracker.rejectedCount} candidates=$details analysis_us=${(SystemClock.elapsedRealtimeNanos()-analysisStart)/1000}")
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300
         val videoDue = recordVideo && now >= retryAt && now-lastVideo >= 1000L/videoFps && videoBusy.compareAndSet(false,true)
