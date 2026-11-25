@@ -242,27 +242,32 @@ class CaptureService : Service() {
         gateClosed = false
         lastGameSeen = now
         captureCount++
-        if (now-lastBattingCheck>=200L) {
-            lastBattingCheck=now
-            val previous=batting
-            batting=runCatching { battingDetector.matches(image) }.getOrDefault(false)
-            if (previous != batting) diagnostic("batting observed=$batting (nonblocking)")
-        }
         if (now-lastAnalysis < 30L) return
         lastAnalysis = now
-        val hit = tracker.process(image, region, target, false, now, timingMs)
+        val scene = battingDetector.observe(image)
+        batting = scene.batting
+        if (scene.cut || !batting) {
+            tracker.reset(); pitchDetector.reset(); trail.clear(); pitchUntil=0L
+            if (scene.cut) diagnostic("scene cut: reset")
+            if (wasRecording || scene.cut) videoHandler.post { closeVideo("scene ended"); clearPreRoll(); wasRecording=false }
+        }
+        val hit = if (batting && !scene.cut) tracker.process(image, region, target, false, now, timingMs) else false
         frames++
         fpsFrames++
         if (fpsStart == 0L) fpsStart = now
         if (now-fpsStart >= 1000L) { actualFps = (fpsFrames*1000L/(now-fpsStart)).toInt(); captureFps=(captureCount*1000L/(now-fpsStart)).toInt(); videoFpsActual=((videoFrames-lastVideoCount)*1000L/(now-fpsStart)).toInt(); lastVideoCount=videoFrames; captureCount=0; fpsFrames=0; fpsStart=now }
-        val point = tracker.point
-        if(point!=null) lastPitch=now
-        val confirmed = runCatching { pitchDetector.update(image, if(tracker.confirmed) point else null, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
-        if (confirmed) pitchUntil = now + 1600L
+        val rawPoint = tracker.point
+        if(rawPoint!=null) lastPitch=now
+        val confirmed = runCatching { pitchDetector.update(image, if(batting && tracker.confirmed) rawPoint else null, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
+        if (confirmed && batting) pitchUntil = now + 1100L
+        val pitchActive = batting && now <= pitchUntil
+        val point = if(pitchActive) rawPoint else null
+        val validContact = pitchActive && tracker.contact
+        if (validContact) pitchUntil = minOf(pitchUntil, now+100L)
         
         if (now - lastPointTime > 70L || !tracker.confirmed) trail.clear()
         if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
-        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch,tracker.predictedPoint,tracker.confirmed)
+        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",validContact,frames,tracker.candidateCount,tracker.launch,if(pitchActive) tracker.predictedPoint else null,pitchActive && tracker.confirmed)
         if (showOverlay && now-lastOverlay >= 33L) {
             lastOverlay=now
             mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
@@ -273,11 +278,11 @@ class CaptureService : Service() {
             if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
-            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${tracker.contact},$showOverlay\n")
+            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",${hit && pitchActive},${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
             if (samples.length >= 32768) { file.appendText(samples.toString()); samples.clear() }
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300
-        val videoDue = recordVideo && now >= retryAt && now-lastVideo >= 1000L/videoFps && videoBusy.compareAndSet(false,true)
+        val videoDue = recordVideo && (!pitchOnly || batting) && now >= retryAt && now-lastVideo >= 1000L/videoFps && videoBusy.compareAndSet(false,true)
         if (pictureDue || videoDue) {
             if (pictureDue) lastPicture = now
             val dir = java.io.File(filesDir, "training/$session").apply { mkdirs() }
@@ -291,7 +296,7 @@ class CaptureService : Service() {
                 try {
                     if (videoDue) {
                         lastVideo = now
-                        val activePitch = !pitchOnly || now <= pitchUntil
+                        val activePitch = !pitchOnly || pitchActive
                         val copy = android.graphics.Bitmap.createScaledBitmap(cropped, (cropped.width/4)*2, (cropped.height/4)*2, true)
                         videoHandler.post {
                             try {

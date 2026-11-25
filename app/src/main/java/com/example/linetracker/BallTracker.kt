@@ -12,7 +12,9 @@ class BallTracker {
     var confidence = 0; private set
     var confirmed = false; private set
     private var streak = 0
-    private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float, val startX: Float, val startY: Float, val independent: Int = 0)
+    private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float, val startX: Float, val startY: Float, val independent: Int = 0, val id: Long = 0)
+    private var nextId = 0L
+    private var activeId = 0L
     private var tracks = emptyList<Track>()
     private var frameIndex = 0
     private var bodyX = 0f
@@ -25,7 +27,7 @@ class BallTracker {
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { tracks=emptyList(); frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
@@ -203,17 +205,17 @@ class BallTracker {
                     val independent=if(relative>4f*scale && dy>1f*scale) tr.independent+1 else (tr.independent-1).coerceAtLeast(0)
                     val bodyPenalty=if(bodyValid && separation<45f*scale) 22f else 0f
                     val score=(tr.score*.55f+q.quality*15f+18f-err/gate*14f+min(18f,progress/scale*.3f)+min(12f,independent*4f)-bodyPenalty).coerceIn(0f,100f)
-                    Track(q,now,dx/dt,dy/dt,tr.hits+1,score,tr.startX,tr.startY,independent)
+                    Track(q,now,dx/dt,dy/dt,tr.hits+1,score,tr.startX,tr.startY,independent,tr.id)
                 }
             }.sortedByDescending { it.score }.take(2)
             next.addAll(matches)
             if(matches.isEmpty() && dt<=120) next.add(tr.copy(score=tr.score-8))
         }
-        for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f,q.x,q.y))
+        for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f,q.x,q.y,id=++nextId))
         tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(16)
-        val winner=tracks.filter { it.time==now && it.hits>=3 && it.independent>=2 && it.blob.y-it.startY>=18f*scale && it.score>=48f && (!bodyValid || hypot(it.blob.x-bodyX,it.blob.y-bodyY)>35f*scale) }.maxByOrNull { it.score }
+        val winner=tracks.filter { (activeId==0L || it.id==activeId) && it.time==now && it.hits>=3 && it.independent>=2 && it.blob.y-it.startY>=18f*scale && it.score>=48f && (!bodyValid || hypot(it.blob.x-bodyX,it.blob.y-bodyY)>35f*scale) }.maxByOrNull { it.score }
         val selected=winner?.blob
-        if(winner!=null) confidence=winner.score.toInt().coerceIn(0,100)
+        if(winner!=null) { activeId=winner.id; confidence=winner.score.toInt().coerceIn(0,100) }
         candidateTime=now
         lastCandidates = candidates
         if (selected == null) {
@@ -225,7 +227,7 @@ class BallTracker {
                 status="예측 위치 · 누락 $missing · 신뢰 $confidence"
                 return false
             }
-            if (now-lastSeen >= 70L || (prev == null && missing >= 3)) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
+            if (now-lastSeen >= 70L || (prev == null && missing >= 3)) { activeId=0L; previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
             if (now - lastSeen >= 650L) locked = false
             status = when {
                 brightPixels == 0 -> "공 미검출: 밝은 픽셀 0"
