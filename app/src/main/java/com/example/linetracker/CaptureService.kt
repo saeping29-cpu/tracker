@@ -250,11 +250,6 @@ class CaptureService : Service() {
         }
         if (now-lastAnalysis < 30L) return
         lastAnalysis = now
-        if (showOverlay && now-lastOverlay >= 50L) {
-            lastOverlay = now
-            val base = TraceFrame(image.width,image.height,region,target,tracker.point,trail.toList(),"${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch,tracker.predictedPoint,tracker.confirmed)
-            mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(base) }
-        }
         val hit = tracker.process(image, region, target, false, now, timingMs)
         frames++
         fpsFrames++
@@ -265,9 +260,13 @@ class CaptureService : Service() {
         val confirmed = runCatching { pitchDetector.update(image, if(tracker.confirmed) point else null, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
         if (confirmed) pitchUntil = now + 1600L
         
-        if (now - lastPointTime > 250L) trail.clear()
+        if (now - lastPointTime > 70L || !tracker.confirmed) trail.clear()
         if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
         val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch,tracker.predictedPoint,tracker.confirmed)
+        if (showOverlay && now-lastOverlay >= 33L) {
+            lastOverlay=now
+            mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
+        }
         if (now - lastSample >= 33L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")

@@ -12,9 +12,12 @@ class BallTracker {
     var confidence = 0; private set
     var confirmed = false; private set
     private var streak = 0
-    private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float)
+    private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float, val startX: Float, val startY: Float, val independent: Int = 0)
     private var tracks = emptyList<Track>()
     private var frameIndex = 0
+    private var bodyX = 0f
+    private var bodyY = 0f
+    private var bodyValid = false
     private var rowBytes = ByteArray(0)
     private var rgb = ByteArray(0)
     private var candidateTime = 0L
@@ -22,7 +25,7 @@ class BallTracker {
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { tracks=emptyList(); frameIndex=0; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { tracks=emptyList(); frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
@@ -105,6 +108,7 @@ class BallTracker {
         val seen = seenBuffer; seen.fill(false)
         val queue = queueBuffer
         val coarse = ArrayList<Blob>()
+        var bodySumX=0f; var bodySumY=0f; var bodyWeight=0f
         for (i in mask.indices) {
             if (!mask[i] || seen[i]) continue
             var head = 0
@@ -126,6 +130,8 @@ class BallTracker {
                 if (y > 0) { val n = at - gw; if (mask[n] && !seen[n]) { seen[n] = true; queue[tail++] = n } }
                 if (y < gh - 1) { val n = at + gw; if (mask[n] && !seen[n]) { seen[n] = true; queue[tail++] = n } }
             }
+            val bx=l+sumX.toFloat()/tail*step; val by=t+sumY.toFloat()/tail*step
+            if(tail>=45 && abs(bx-w*.5f)<w*.09f && by in h*.24f..h*.55f) { bodySumX+=bx*tail; bodySumY+=by*tail; bodyWeight+=tail }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
             if (changed >= 1 && changed.toFloat() / tail >= .08f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 4f &&
@@ -134,6 +140,11 @@ class BallTracker {
                     t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail, (changed.toFloat()/tail * 0.5f + tail.toFloat()/(bw*bh)*0.5f)))
             }
         }
+        val newBodyX=if(bodyWeight>0) bodySumX/bodyWeight else w*.5f
+        val newBodyY=if(bodyWeight>0) bodySumY/bodyWeight else h*.39f
+        val bodyDx=if(bodyValid && bodyWeight>0) newBodyX-bodyX else 0f
+        val bodyDy=if(bodyValid && bodyWeight>0) newBodyY-bodyY else 0f
+        bodyX=newBodyX; bodyY=newBodyY; bodyValid=bodyWeight>0
         candidateCount = coarse.size
         // Bound expensive refinement. Prefer predicted location when a track exists.
         val prior = previous
@@ -142,7 +153,7 @@ class BallTracker {
         val expectedY = (prior?.y ?: 0f)+vy*age
         val refined = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
             .sortedByDescending { q -> q.quality - if(prior!=null) min(2f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }
-            .take(48).mapNotNull { q ->
+            .take(32).plus(coarse.sortedByDescending { it.quality }.take(24).asSequence()).distinct().mapNotNull { q ->
                 // Full resolution refinement around the coarse connected component.
                 val rad = ceil(q.radius+2).toInt().coerceIn(2,24)
                 val cx=q.x.toInt(); val cy=q.y.toInt()
@@ -184,33 +195,37 @@ class BallTracker {
             val matches=candidates.mapNotNull { q ->
                 val dx=q.x-tr.blob.x; val dy=q.y-tr.blob.y; val dist=hypot(dx,dy)
                 val err=if(tr.hits<2) dist else hypot(q.x-ex,q.y-ey)
-                if(dist<1.5f*scale || dy< -8f*scale || err>gate || abs(q.radius-tr.blob.radius)>max(5f*scale,tr.blob.radius)) null
+                if(dist<2f*scale || dy< -12f*scale || err>gate || abs(q.radius-tr.blob.radius)>max(5f*scale,tr.blob.radius)) null
                 else {
-                    val appearance=q.quality*18f - q.radius/scale*.5f
-                    val score=tr.score*.65f+appearance+25f-err/gate*18f+min(8f,dy/scale*.2f)
-                    Track(q,now,dx/dt,dy/dt,tr.hits+1,score)
+                    val progress=q.y-tr.startY
+                    val separation=hypot(q.x-bodyX,q.y-bodyY)
+                    val relative=hypot(dx-bodyDx,dy-bodyDy)
+                    val independent=if(relative>4f*scale && dy>1f*scale) tr.independent+1 else (tr.independent-1).coerceAtLeast(0)
+                    val bodyPenalty=if(bodyValid && separation<45f*scale) 22f else 0f
+                    val score=(tr.score*.55f+q.quality*15f+18f-err/gate*14f+min(18f,progress/scale*.3f)+min(12f,independent*4f)-bodyPenalty).coerceIn(0f,100f)
+                    Track(q,now,dx/dt,dy/dt,tr.hits+1,score,tr.startX,tr.startY,independent)
                 }
             }.sortedByDescending { it.score }.take(2)
             next.addAll(matches)
             if(matches.isEmpty() && dt<=120) next.add(tr.copy(score=tr.score-8))
         }
-        for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f))
+        for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f,q.x,q.y))
         tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(16)
-        val winner=tracks.filter { it.time==now && it.hits>=2 }.maxByOrNull { it.score }
+        val winner=tracks.filter { it.time==now && it.hits>=3 && it.independent>=2 && it.blob.y-it.startY>=18f*scale && it.score>=48f && (!bodyValid || hypot(it.blob.x-bodyX,it.blob.y-bodyY)>35f*scale) }.maxByOrNull { it.score }
         val selected=winner?.blob
         if(winner!=null) confidence=winner.score.toInt().coerceIn(0,100)
         candidateTime=now
         lastCandidates = candidates
         if (selected == null) {
             missing++
-            if (prev != null && confirmed && now-lastSeen <= 180L) {
+            if (prev != null && confirmed && now-lastSeen <= 70L) {
                 val dt=(now-previousTime).toFloat()
                 predictedPoint=Point((prev.x+vx*dt).coerceIn(0f,w-1f),(prev.y+vy*dt).coerceIn(0f,h-1f),prev.radius)
                 confidence=(confidence-15).coerceAtLeast(0)
                 status="예측 위치 · 누락 $missing · 신뢰 $confidence"
                 return false
             }
-            if (now-lastSeen >= 180L || (prev == null && missing >= 3)) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
+            if (now-lastSeen >= 70L || (prev == null && missing >= 3)) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
             if (now - lastSeen >= 650L) locked = false
             status = when {
                 brightPixels == 0 -> "공 미검출: 밝은 픽셀 0"
@@ -258,10 +273,11 @@ class BallTracker {
                 }
             }
         }
-        contact = confirmed && (touches(selected) || crossed)
+        contact = confirmed && winner != null && selected.y-winner.startY >= 65f*scale && selected.y >= max(tt,h*.52f) && (touches(selected) || crossed)
         val trigger = confirmed && !locked && prev != null && now - lastTrigger >= 650L &&
-            (contact || (timingMs < 0 && predicted))
-        if (prev != null) { val nx=(selected.x-prev.x)/dtTrack; val ny=(selected.y-prev.y)/dtTrack; vx=if(streak<=2) nx else .35f*vx+.65f*nx; vy=if(streak<=2) ny else .35f*vy+.65f*ny }
+            contact
+        if (prev != null && hypot(selected.x-prev.x,selected.y-prev.y)<max(35f*scale,dtTrack*3f*scale)) { val nx=(selected.x-prev.x)/dtTrack; val ny=(selected.y-prev.y)/dtTrack; vx=if(streak<=2) nx else .35f*vx+.65f*nx; vy=if(streak<=2) ny else .35f*vy+.65f*ny }
+        if(winner!=null) { vx=winner.vx; vy=winner.vy }
         previous = selected
         previousTime = now
         if (trigger) {
