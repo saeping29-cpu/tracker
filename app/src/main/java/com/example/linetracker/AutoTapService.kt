@@ -31,7 +31,7 @@ class AutoTapService : AccessibilityService() {
         foregroundPackage = runCatching {
             val app = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
                 ?: windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused }
-            app?.root?.packageName?.toString() ?: rootInActiveWindow?.packageName?.toString().orEmpty()
+            app?.root?.packageName?.toString() ?: ""
         }.getOrDefault("")
     }
     private var trace: TraceOverlay? = null
@@ -43,9 +43,8 @@ class AutoTapService : AccessibilityService() {
             val params = WindowManager.LayoutParams(-1,-1,WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT)
-            try { wm.addView(v,params); trace = v } catch (e: Exception) { android.util.Log.e("LineTracker", "overlay attach failed", e); runCatching { java.io.File(filesDir,"diagnostics.txt").appendText("overlay attach failed: $e\n") }; return }
+            try { wm.addView(v,params); trace = v } catch (_: Exception) { return }
         }
-        trace?.visibility = android.view.View.VISIBLE
         trace?.frame = frame
     }
     fun hideTrace() { trace?.let { runCatching { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } }; trace = null }

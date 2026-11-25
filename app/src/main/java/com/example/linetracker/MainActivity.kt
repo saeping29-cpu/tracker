@@ -119,9 +119,9 @@ class MainActivity : Activity() {
         label("공 출발 영역 (%)")
         launchInputs = listOf("35","25","65","55").map { field("출발 좌표",it) }
         root.addView(Button(this).apply { text = "공 출발 영역 그리기"; setOnClickListener { openSelector("launch") } })
-        pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험)"; isChecked = true }
+        pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험, 기본 OFF)"; isChecked = false }
         root.addView(pitchOnly)
-        battingGate = CheckBox(this).apply { text = "타격 화면만 수집 (실험, 기본 OFF)"; isChecked = false }
+        battingGate = CheckBox(this).apply { text = "타격 화면 판단 기록 (분석 차단 없음)"; isChecked = false }
         root.addView(battingGate)
         label("영상 비트레이트 (Mbps, 절반 해상도)")
         bitrateSpinner = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, listOf("1", "2", "4")); setSelection(1) }

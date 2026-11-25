@@ -59,9 +59,7 @@ class CaptureService : Service() {
     private var pitchOnly = true
     private var battingGate = false
     private val battingDetector = BattingScreenDetector()
-    private var batting = false
-    private var gateCleared = false
-    private var lastScreenLog = false
+    private var batting = true
     private var lastBattingCheck = 0L
     private var bitrate = 2000000
     private var captureCount = 0
@@ -93,6 +91,8 @@ class CaptureService : Service() {
     @Volatile private var retryAt = 0L
     private var unknownSince = 0L
     private var gateState = ""
+    private var gateClosed = false
+    private var lastGameSeen = -10000L
     @Volatile private var videoFrames = 0L
     private fun diagnostic(message: String) {
         Log.i("LineTracker", message)
@@ -225,8 +225,9 @@ class CaptureService : Service() {
         if (!allowed) {
             if (unknownSince == 0L) unknownSince = now
             // Never collect unverified screens. Keep encoder alive briefly on transient unknown state.
-            if ((active.isNotBlank() || now - unknownSince >= 1500L) && !gateCleared) {
-                gateCleared=true; tracker.reset(); trail.clear(); lastPitch = -10000L
+            if (!gateClosed && ((active.isNotBlank() && active != "com.android.systemui") || now - lastGameSeen >= 1500L)) {
+                gateClosed = true
+                tracker.reset(); trail.clear(); lastPitch = -10000L
                 pitchDetector.reset(); pitchUntil = 0L
                 videoHandler.post { closeVideo("app gate $state"); clearPreRoll(); wasRecording=false }
                 mainHandler.post { if (!stopped) AutoTapService.instance?.hideTrace() }
@@ -238,49 +239,43 @@ class CaptureService : Service() {
             return
         }
         unknownSince = 0L
+        gateClosed = false
+        lastGameSeen = now
         captureCount++
-        if ((battingGate || pitchOnly) && now-lastBattingCheck>=100L) { lastBattingCheck=now; batting=battingDetector.matches(image) }
-        if ((battingGate || pitchOnly) && !batting) {
-            tracker.reset(); pitchDetector.reset(); trail.clear(); pitchUntil=0L
-            if (!gateCleared) { videoHandler.post { closeVideo("batting gate"); clearPreRoll(); wasRecording=false }; diagnostic("screen rejected"); gateCleared=true }
-            if (showOverlay && now-lastOverlay>=150L) { lastOverlay=now; val waiting=TraceFrame(image.width,image.height,region,target,null,emptyList(),"WAIT / 타격 화면 대기",false,frames,0,tracker.launch); mainHandler.post { if(!stopped) AutoTapService.instance?.showTrace(waiting) } }
-            return
+        if (now-lastBattingCheck>=200L) {
+            lastBattingCheck=now
+            val previous=batting
+            batting=runCatching { battingDetector.matches(image) }.getOrDefault(false)
+            if (previous != batting) diagnostic("batting observed=$batting (nonblocking)")
         }
-        gateCleared=false
-        if (now-lastAnalysis < 30L) return
+        if (now-lastAnalysis < 32L) return
         lastAnalysis = now
-        val analysisStart = SystemClock.elapsedRealtimeNanos()
-        val rawHit = tracker.process(image, region, target, false, now, timingMs)
+        if (showOverlay && now-lastOverlay >= 50L) {
+            lastOverlay = now
+            val base = TraceFrame(image.width,image.height,region,target,tracker.point,trail.toList(),"${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch)
+            mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(base) }
+        }
+        val hit = tracker.process(image, region, target, false, now, timingMs)
         frames++
         fpsFrames++
         if (fpsStart == 0L) fpsStart = now
         if (now-fpsStart >= 1000L) { actualFps = (fpsFrames*1000L/(now-fpsStart)).toInt(); captureFps=(captureCount*1000L/(now-fpsStart)).toInt(); videoFpsActual=((videoFrames-lastVideoCount)*1000L/(now-fpsStart)).toInt(); lastVideoCount=videoFrames; captureCount=0; fpsFrames=0; fpsStart=now }
         val point = tracker.point
         if(point!=null) lastPitch=now
-        val confirmed = pitchDetector.update(image, point, now)
-        if (confirmed) { pitchUntil = now + 1250L; diagnostic("pitch confirmed frame=$frames") }
-        val hit = rawHit && now<=pitchUntil
-        val validContact = tracker.contact && now<=pitchUntil
+        val confirmed = runCatching { pitchDetector.update(image, point, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
+        if (confirmed) pitchUntil = now + 1600L
         
         if (now - lastPointTime > 250L) trail.clear()
         if (point != null) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
-        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / CAP $captureFps / TRACK $actualFps / REC $videoFpsActual",validContact,frames,tracker.candidateCount,tracker.launch,tracker.debugCandidates)
-        if (showOverlay && now-lastOverlay >= 50L) {
-            lastOverlay = now
-            mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
-        }
+        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch)
         if (now - lastSample >= 33L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")
             if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
-            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
+            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${tracker.contact},$showOverlay\n")
             if (samples.length >= 8192) { file.appendText(samples.toString()); samples.clear() }
-        }
-        if (frames % 5L == 0L) {
-            val details = tracker.debugCandidates.joinToString(";") { "${it.x.toInt()}:${it.y.toInt()}:${it.radius}" }
-            diagnostic("frame=$frames batting=$batting pitch=${now<=pitchUntil} rejected=${tracker.rejectedCount} candidates=$details analysis_us=${(SystemClock.elapsedRealtimeNanos()-analysisStart)/1000}")
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300
         val videoDue = recordVideo && now >= retryAt && now-lastVideo >= 1000L/videoFps && videoBusy.compareAndSet(false,true)
