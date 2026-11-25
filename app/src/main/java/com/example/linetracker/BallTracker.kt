@@ -12,12 +12,17 @@ class BallTracker {
     var confidence = 0; private set
     var confirmed = false; private set
     private var streak = 0
+    private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float)
+    private var tracks = emptyList<Track>()
+    private var frameIndex = 0
+    private var rowBytes = ByteArray(0)
+    private var rgb = ByteArray(0)
     private var candidateTime = 0L
     var candidateCount = 0; private set
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { tracks=emptyList(); frameIndex=0; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
@@ -62,12 +67,28 @@ class BallTracker {
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
         val limit = buffer.limit()
-        fun bright(px: Int, py: Int): Boolean {
-            val off = py * rowStride + px * pixelStride
-            if (off < 0 || off + 2 >= limit) return false
-            val a=buffer.get(off).toInt() and 255; val c=buffer.get(off+1).toInt() and 255; val d=buffer.get(off+2).toInt() and 255
-            val lo=min(a,min(c,d)); return lo>=165 && max(a,max(c,d))-lo<=75
+        // Bulk row reads avoid three direct-buffer JNI accesses per pixel.
+        val rw=r-l; val rh=b-t
+        if(rgb.size!=rw*rh*3) rgb=ByteArray(rw*rh*3)
+        if(rowBytes.size!=rw*pixelStride) rowBytes=ByteArray(rw*pixelStride)
+        val view=buffer.duplicate()
+        for(y in 0 until rh) {
+            val off=(t+y)*rowStride+l*pixelStride
+            val len=min(rowBytes.size,limit-off).coerceAtLeast(0)
+            if(len>0) { view.position(off); view.get(rowBytes,0,len) }
+            for(x in 0 until rw) {
+                val src=x*pixelStride; val dst=(y*rw+x)*3
+                if(src+2<len) { rgb[dst]=rowBytes[src]; rgb[dst+1]=rowBytes[src+1]; rgb[dst+2]=rowBytes[src+2] }
+                else { rgb[dst]=0; rgb[dst+1]=0; rgb[dst+2]=0 }
+            }
         }
+        fun bright(px: Int, py: Int): Boolean {
+            if(px !in l until r || py !in t until b) return false
+            val off=((py-t)*rw+px-l)*3
+            val a=rgb[off].toInt() and 255; val c=rgb[off+1].toInt() and 255; val d=rgb[off+2].toInt() and 255
+            val lo=min(a,min(c,d)); return lo>=145 && max(a,max(c,d))-lo<=90
+        }
+        frameIndex++
         var brightPixels = 0
         for (y in 0 until gh) for (x in 0 until gw) {
             val px = l + x * step
@@ -107,7 +128,7 @@ class BallTracker {
             }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
-            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
+            if (changed >= 1 && changed.toFloat() / tail >= .08f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 4f &&
                 tail.toFloat() / (bw * bh) > .30f) {
                 coarse.add(Blob(l + sumX.toFloat() / tail * step,
                     t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail, (changed.toFloat()/tail * 0.5f + tail.toFloat()/(bw*bh)*0.5f)))
@@ -119,9 +140,9 @@ class BallTracker {
         val age = (now-previousTime).coerceIn(0L,260L).toFloat()
         val expectedX = (prior?.x ?: 0f)+vx*age
         val expectedY = (prior?.y ?: 0f)+vy*age
-        val candidates = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
+        val refined = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
             .sortedByDescending { q -> q.quality - if(prior!=null) min(2f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }
-            .take(32).mapNotNull { q ->
+            .take(48).mapNotNull { q ->
                 // Full resolution refinement around the coarse connected component.
                 val rad = ceil(q.radius+2).toInt().coerceIn(2,24)
                 val cx=q.x.toInt(); val cy=q.y.toInt()
@@ -131,39 +152,53 @@ class BallTracker {
                     n++; sx+=xx; sy+=yy
                     if(abs(xx-cx)==rad || abs(yy-cy)==rad) edge++
                 }
-                if(n==0 || edge>max(3,n/4)) null else {
+                if(n==0 || edge>max(5,n/3)) null else {
                     val rr=sqrt(n/PI).toFloat()
                     if(rr>max(14f*w/2000f,(prior?.radius ?: 0f)*1.8f)) null
                     else Blob(sx.toFloat()/n,sy.toFloat()/n,rr,n,q.quality)
                 }
             }.toList()
-        val prev = previous
-        val dtTrack = (now - previousTime).coerceIn(1L, 260L).toFloat()
-        val scale = w / 2000f
-        val dtSeed = (now-candidateTime).coerceIn(1L, 250L).toFloat()
-        val selected = if (prev == null) {
-            if (now-candidateTime > 200L) null else candidates.mapNotNull { q ->
-                if (q.radius > 14f*scale || q.y < h*.27f) return@mapNotNull null
-                val best = lastCandidates.mapNotNull { p ->
-                    val inLaunch = p.x in (min(launch[0],launch[2])*w/100f)..(max(launch[0],launch[2])*w/100f) && p.y in (min(launch[1],launch[3])*h/100f)..(max(launch[1],launch[3])*h/100f)
-                    val dx=q.x-p.x; val dy=q.y-p.y; val d=hypot(dx,dy)
-                    if (!inLaunch || p.radius>14f*scale || dy<2f*scale || d<3f*scale || d>dtSeed*2.8f*scale+12f*scale || abs(q.radius-p.radius)>max(3f*scale,p.radius*.8f)) null
-                    else 45f + q.quality*25f + min(15f,dy/scale) - abs(dx)*.08f/scale - q.radius/scale
-                }.maxOrNull()
-                if(best==null) null else q to best
-            }.maxByOrNull { it.second }?.also { confidence=it.second.toInt().coerceIn(0,100) }?.first
-        } else {
-            val px=prev.x+vx*dtTrack; val py=prev.y+vy*dtTrack
-            val gate=max(18f*scale, (24f+missing*12f)*scale+hypot(vx,vy)*dtTrack*.65f)
-            candidates.mapNotNull { q ->
-                val dx=q.x-prev.x; val dy=q.y-prev.y; val d=hypot(dx,dy)
-                val err=hypot(q.x-px,q.y-py)
-                val speed=hypot(vx,vy)
-                val cosine=if(speed>.04f && d>1f) (dx*vx+dy*vy)/(d*speed) else 1f
-                if(d<1.5f*scale || dy< -5f*scale || err>gate || cosine<-.15f || q.radius>max(14f*scale,prev.radius*1.8f) || abs(q.radius-prev.radius)>max(4f*scale,prev.radius*.85f)) null
-                else q to (100f-err/gate*42f-abs(q.radius-prev.radius)/max(2f,prev.radius)*12f-(1f-cosine)*12f+q.quality*8f)
-            }.filter { it.second>=48f }.maxByOrNull { it.second }?.also { confidence=it.second.toInt().coerceIn(0,100) }?.first
+        // Native-resolution search near all surviving hypotheses and release region.
+        val extra=ArrayList<Blob>()
+        fun scan(cx:Int,cy:Int,rad:Int) {
+            for(y in max(t+2,cy-rad)..min(b-3,cy+rad) step 1) for(x in max(l+2,cx-rad)..min(r-3,cx+rad) step 1) {
+                if(!bright(x,y) || bright(x-2,y) || bright(x+2,y) || bright(x,y-2) || bright(x,y+2)) continue
+                if(extra.any { abs(it.x-x)<4 && abs(it.y-y)<4 }) continue
+                extra.add(Blob(x.toFloat(),y.toFloat(),1.5f,5,.65f))
+                if(extra.size>=48) return
+            }
         }
+        for(q in tracks.take(5)) { val dt=(now-q.time).coerceIn(0L,200L); scan((q.blob.x+q.vx*dt).toInt(),(q.blob.y+q.vy*dt).toInt(),24) }
+        if(tracks.isEmpty() || frameIndex%3==0) scan((launch[0]+launch[2])*w/200,(launch[1]+launch[3])*h/200,40)
+        val candidates=(refined+extra).distinctBy { (it.x.toInt()/3)*10000+it.y.toInt()/3 }
+        candidateCount=candidates.size
+        val prev=previous
+        val dtTrack=(now-previousTime).coerceIn(1L,260L).toFloat()
+        val scale=w/2000f
+        val next=ArrayList<Track>()
+        for(tr in tracks) {
+            val dt=(now-tr.time).toFloat()
+            if(dt<=0 || dt>180) continue
+            val ex=tr.blob.x+tr.vx*dt; val ey=tr.blob.y+tr.vy*dt
+            val gate=if(tr.hits<2) 12f+dt*3.5f*scale else 22f*scale+hypot(tr.vx,tr.vy)*dt*.7f
+            val matches=candidates.mapNotNull { q ->
+                val dx=q.x-tr.blob.x; val dy=q.y-tr.blob.y; val dist=hypot(dx,dy)
+                val err=if(tr.hits<2) dist else hypot(q.x-ex,q.y-ey)
+                if(dist<1.5f*scale || dy< -8f*scale || err>gate || abs(q.radius-tr.blob.radius)>max(5f*scale,tr.blob.radius)) null
+                else {
+                    val appearance=q.quality*18f - q.radius/scale*.5f
+                    val score=tr.score*.65f+appearance+25f-err/gate*18f+min(8f,dy/scale*.2f)
+                    Track(q,now,dx/dt,dy/dt,tr.hits+1,score)
+                }
+            }.sortedByDescending { it.score }.take(2)
+            next.addAll(matches)
+            if(matches.isEmpty() && dt<=120) next.add(tr.copy(score=tr.score-8))
+        }
+        for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f))
+        tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(16)
+        val winner=tracks.filter { it.time==now && it.hits>=2 }.maxByOrNull { it.score }
+        val selected=winner?.blob
+        if(winner!=null) confidence=winner.score.toInt().coerceIn(0,100)
         candidateTime=now
         lastCandidates = candidates
         if (selected == null) {
@@ -184,8 +219,8 @@ class BallTracker {
             }
             return false
         }
-        streak++
-        confirmed = streak >= 2
+        streak=winner?.hits ?: 0
+        confirmed = streak >= 3
         point = Point(selected.x, selected.y, selected.radius)
         missing = 0
         lastSeen = now
@@ -201,7 +236,7 @@ class BallTracker {
         var crossed = false
         var predicted = false
         val dt = now - previousTime
-        if (prev != null && dt in 1..160) {
+        if (prev != null && dt in 1..160 && hypot(selected.x-prev.x,selected.y-prev.y)<max(30f,dt*4f)) {
             if (!touches(prev)) {
                 for (k in 1..8) {
                     val f = k / 8f

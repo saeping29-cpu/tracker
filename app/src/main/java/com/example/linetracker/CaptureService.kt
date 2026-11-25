@@ -188,7 +188,7 @@ class CaptureService : Service() {
             screenHeight = metrics.heightPixels
             workerThread = HandlerThread("BallAnalysis", android.os.Process.THREAD_PRIORITY_DISPLAY).apply { start() }
             workerHandler = Handler(workerThread!!.looper)
-            reader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+            reader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 3)
             reader?.setOnImageAvailableListener({ r ->
                 val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
@@ -248,7 +248,7 @@ class CaptureService : Service() {
             batting=runCatching { battingDetector.matches(image) }.getOrDefault(false)
             if (previous != batting) diagnostic("batting observed=$batting (nonblocking)")
         }
-        if (now-lastAnalysis < 32L) return
+        if (now-lastAnalysis < 30L) return
         lastAnalysis = now
         if (showOverlay && now-lastOverlay >= 50L) {
             lastOverlay = now
@@ -275,7 +275,7 @@ class CaptureService : Service() {
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
             samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",$hit,${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${tracker.contact},$showOverlay\n")
-            if (samples.length >= 8192) { file.appendText(samples.toString()); samples.clear() }
+            if (samples.length >= 32768) { file.appendText(samples.toString()); samples.clear() }
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300
         val videoDue = recordVideo && now >= retryAt && now-lastVideo >= 1000L/videoFps && videoBusy.compareAndSet(false,true)
