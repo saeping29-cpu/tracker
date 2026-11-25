@@ -29,7 +29,7 @@ class PitchDetector {
         val old=point; point=candidate
         if (candidate==null || old==null || now-motionAt>450 || now-last<1800) return false
         val distance=hypot(candidate.x-old.x,candidate.y-old.y)
-        if (distance<image.width*.003f || candidate.y<image.height*.38f) return false
+        if (distance<image.width*.003f || candidate.y<image.height*.38f || candidate.y-old.y<image.height*.002f) return false
         last=now; return true
     }
 }

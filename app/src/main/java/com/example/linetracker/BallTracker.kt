@@ -5,14 +5,19 @@ import kotlin.math.*
 
 /** Bright moving ball detector. Diagnostic status distinguishes candidate and tracking failures. */
 class BallTracker {
-    private data class Blob(val x: Float, val y: Float, val radius: Float, val pixels: Int)
+    private data class Blob(val x: Float, val y: Float, val radius: Float, val pixels: Int, val quality: Float = 0f)
     data class Point(val x: Float, val y: Float, val radius: Float)
     var point: Point? = null; private set
+    var predictedPoint: Point? = null; private set
+    var confidence = 0; private set
+    var confirmed = false; private set
+    private var streak = 0
+    private var candidateTime = 0L
     var candidateCount = 0; private set
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { previous=null; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var spareMask = BooleanArray(0)
@@ -30,7 +35,7 @@ class BallTracker {
     var status = "공 탐색 중"; private set
 
     fun process(image: Image, roi: IntArray, target: IntArray, lineMode: Boolean, now: Long, timingMs: Int = 0): Boolean {
-        point = null; candidateCount = 0; contact = false
+        point = null; predictedPoint=null; candidateCount = 0; contact = false
         val w = image.width
         val h = image.height
         if (w <= 0 || h <= 0 || roi.size < 4 || target.size < 4) {
@@ -41,7 +46,7 @@ class BallTracker {
         val r = (max(roi[0], roi[2]) * w / 100).coerceIn(l + 1, w)
         val t = (min(roi[1], roi[3]) * h / 100).coerceIn(0, h - 1)
         val b = (max(roi[1], roi[3]) * h / 100).coerceIn(t + 1, h)
-        val step = 2
+        val step = 1
         val gw = max(1, (r - l + step - 1) / step)
         val gh = max(1, (b - t + step - 1) / step)
         val mask = if (spareMask.size == gw*gh) spareMask else BooleanArray(gw*gh)
@@ -94,35 +99,52 @@ class BallTracker {
             }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
-            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 2..900 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
-                tail.toFloat() / (bw * bh) > .25f) {
+            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 2..1800 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
+                tail.toFloat() / (bw * bh) > .30f) {
                 candidates.add(Blob(l + sumX.toFloat() / tail * step,
-                    t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail))
+                    t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail, (changed.toFloat()/tail * 0.5f + tail.toFloat()/(bw*bh)*0.5f)))
             }
         }
         candidateCount = candidates.size
         val prev = previous
         val dtTrack = (now - previousTime).coerceIn(1L, 150L).toFloat()
+        val scale = w / 2000f
+        val dtSeed = (now-candidateTime).coerceIn(1L, 250L).toFloat()
         val selected = if (prev == null) {
-            candidates.filter { q -> lastCandidates.any { p ->
-                val inLaunch = p.x in (min(launch[0],launch[2])*w/100f)..(max(launch[0],launch[2])*w/100f) && p.y in (min(launch[1],launch[3])*h/100f)..(max(launch[1],launch[3])*h/100f)
-                if (!inLaunch) return@any false
-                val d = hypot(q.x-p.x,q.y-p.y)
-                d >= 2f && d <= max(w,h)*.06f && abs(q.radius-p.radius) <= max(4f,p.radius)
-            } }.minByOrNull { it.pixels }
+            if (now-candidateTime > 200L) null else candidates.mapNotNull { q ->
+                if (q.radius > 14f*scale || q.y < h*.27f) return@mapNotNull null
+                val best = lastCandidates.mapNotNull { p ->
+                    val inLaunch = p.x in (min(launch[0],launch[2])*w/100f)..(max(launch[0],launch[2])*w/100f) && p.y in (min(launch[1],launch[3])*h/100f)..(max(launch[1],launch[3])*h/100f)
+                    val dx=q.x-p.x; val dy=q.y-p.y; val d=hypot(dx,dy)
+                    if (!inLaunch || p.radius>14f*scale || dy<2f*scale || d<3f*scale || d>dtSeed*2.8f*scale+12f*scale || abs(q.radius-p.radius)>max(3f*scale,p.radius*.8f)) null
+                    else 45f + q.quality*25f + min(15f,dy/scale) - abs(dx)*.08f/scale - q.radius/scale
+                }.maxOrNull()
+                if(best==null) null else q to best
+            }.maxByOrNull { it.second }?.also { confidence=it.second.toInt().coerceIn(0,100) }?.first
         } else {
-            val px = prev.x + vx*dtTrack
-            val py = prev.y + vy*dtTrack
-            candidates.filter { q ->
-                hypot(q.x-prev.x,q.y-prev.y) >= 1.5f &&
-                hypot(q.x-px,q.y-py) <= max(12f,max(w,h)*.025f + missing*8f) &&
-                abs(q.radius-prev.radius) <= max(5f,prev.radius)
-            }.minByOrNull { hypot(it.x-px,it.y-py) + abs(it.radius-prev.radius)*2f }
+            val px=prev.x+vx*dtTrack; val py=prev.y+vy*dtTrack
+            val gate=max(18f*scale, (24f+missing*12f)*scale+hypot(vx,vy)*dtTrack*.65f)
+            candidates.mapNotNull { q ->
+                val dx=q.x-prev.x; val dy=q.y-prev.y; val d=hypot(dx,dy)
+                val err=hypot(q.x-px,q.y-py)
+                val speed=hypot(vx,vy)
+                val cosine=if(speed>.04f && d>1f) (dx*vx+dy*vy)/(d*speed) else 1f
+                if(d<1.5f*scale || dy< -5f*scale || err>gate || cosine<-.15f || q.radius>max(14f*scale,prev.radius*1.8f) || abs(q.radius-prev.radius)>max(4f*scale,prev.radius*.85f)) null
+                else q to (100f-err/gate*42f-abs(q.radius-prev.radius)/max(2f,prev.radius)*12f-(1f-cosine)*12f+q.quality*8f)
+            }.filter { it.second>=48f }.maxByOrNull { it.second }?.also { confidence=it.second.toInt().coerceIn(0,100) }?.first
         }
+        candidateTime=now
         lastCandidates = candidates
         if (selected == null) {
             missing++
-            if (missing >= 3 || now-lastSeen >= 200L) { previous = null; previousTime = 0L; vx = 0f; vy = 0f }
+            if (prev != null && confirmed && missing <= 3 && now-lastSeen <= 260L) {
+                val dt=(now-previousTime).toFloat()
+                predictedPoint=Point((prev.x+vx*dt).coerceIn(0f,w-1f),(prev.y+vy*dt).coerceIn(0f,h-1f),prev.radius)
+                confidence=(confidence-15).coerceAtLeast(0)
+                status="예측 위치 · 누락 $missing · 신뢰 $confidence"
+                return false
+            }
+            if (missing >= 3 || now-lastSeen >= 260L) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
             if (now - lastSeen >= 650L) locked = false
             status = when {
                 brightPixels == 0 -> "공 미검출: 밝은 픽셀 0"
@@ -131,6 +153,8 @@ class BallTracker {
             }
             return false
         }
+        streak++
+        confirmed = streak >= 2
         point = Point(selected.x, selected.y, selected.radius)
         missing = 0
         lastSeen = now
@@ -168,10 +192,10 @@ class BallTracker {
                 }
             }
         }
-        contact = touches(selected) || crossed
-        val trigger = !locked && prev != null && now - lastTrigger >= 650L &&
+        contact = confirmed && (touches(selected) || crossed)
+        val trigger = confirmed && !locked && prev != null && now - lastTrigger >= 650L &&
             (contact || (timingMs < 0 && predicted))
-        if (prev != null) { vx = (selected.x-prev.x)/dtTrack; vy = (selected.y-prev.y)/dtTrack }
+        if (prev != null) { val nx=(selected.x-prev.x)/dtTrack; val ny=(selected.y-prev.y)/dtTrack; vx=if(streak<=2) nx else .35f*vx+.65f*nx; vy=if(streak<=2) ny else .35f*vy+.65f*ny }
         previous = selected
         previousTime = now
         if (trigger) {
@@ -181,7 +205,7 @@ class BallTracker {
             status = if (predicted && !contact) "예측 타격 ${count}회" else "접촉 타격 ${count}회"
         } else {
             status = "공 후보 ${candidates.size} · 추적 (${selected.x.toInt()}, ${selected.y.toInt()})" +
-                if (contact) " · 접촉" else ""
+                (if (contact) " · 접촉" else "") + " · 신뢰 $confidence · ${if(confirmed) "확정" else "검증"}"
         }
         return trigger
     }

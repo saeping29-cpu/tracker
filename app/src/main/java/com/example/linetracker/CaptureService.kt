@@ -252,7 +252,7 @@ class CaptureService : Service() {
         lastAnalysis = now
         if (showOverlay && now-lastOverlay >= 50L) {
             lastOverlay = now
-            val base = TraceFrame(image.width,image.height,region,target,tracker.point,trail.toList(),"${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch)
+            val base = TraceFrame(image.width,image.height,region,target,tracker.point,trail.toList(),"${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch,tracker.predictedPoint,tracker.confirmed)
             mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(base) }
         }
         val hit = tracker.process(image, region, target, false, now, timingMs)
@@ -262,12 +262,12 @@ class CaptureService : Service() {
         if (now-fpsStart >= 1000L) { actualFps = (fpsFrames*1000L/(now-fpsStart)).toInt(); captureFps=(captureCount*1000L/(now-fpsStart)).toInt(); videoFpsActual=((videoFrames-lastVideoCount)*1000L/(now-fpsStart)).toInt(); lastVideoCount=videoFrames; captureCount=0; fpsFrames=0; fpsStart=now }
         val point = tracker.point
         if(point!=null) lastPitch=now
-        val confirmed = runCatching { pitchDetector.update(image, point, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
+        val confirmed = runCatching { pitchDetector.update(image, if(tracker.confirmed) point else null, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
         if (confirmed) pitchUntil = now + 1600L
         
         if (now - lastPointTime > 250L) trail.clear()
-        if (point != null) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
-        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch)
+        if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
+        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",tracker.contact,frames,tracker.candidateCount,tracker.launch,tracker.predictedPoint,tracker.confirmed)
         if (now - lastSample >= 33L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")
