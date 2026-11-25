@@ -20,6 +20,8 @@ class BallTracker {
     fun reset() { previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
+    private var roiKey = ""
+    var processingMs = 0f; private set
     private var spareMask = BooleanArray(0)
     private var seenBuffer = BooleanArray(0)
     private var queueBuffer = IntArray(0)
@@ -35,6 +37,8 @@ class BallTracker {
     var status = "공 탐색 중"; private set
 
     fun process(image: Image, roi: IntArray, target: IntArray, lineMode: Boolean, now: Long, timingMs: Int = 0): Boolean {
+        val started = System.nanoTime()
+        try {
         point = null; predictedPoint=null; candidateCount = 0; contact = false
         val w = image.width
         val h = image.height
@@ -46,26 +50,30 @@ class BallTracker {
         val r = (max(roi[0], roi[2]) * w / 100).coerceIn(l + 1, w)
         val t = (min(roi[1], roi[3]) * h / 100).coerceIn(0, h - 1)
         val b = (max(roi[1], roi[3]) * h / 100).coerceIn(t + 1, h)
-        val step = 1
+        val key = "$w:$h:$l:$r:$t:$b"
+        if (key != roiKey) { reset(); roiKey = key }
+        val step = 2
         val gw = max(1, (r - l + step - 1) / step)
         val gh = max(1, (b - t + step - 1) / step)
         val mask = if (spareMask.size == gw*gh) spareMask else BooleanArray(gw*gh)
-        mask.fill(false)
+        
         val plane = image.planes[0]
         val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val limit = buffer.limit()
+        fun bright(px: Int, py: Int): Boolean {
+            val off = py * rowStride + px * pixelStride
+            if (off < 0 || off + 2 >= limit) return false
+            val a=buffer.get(off).toInt() and 255; val c=buffer.get(off+1).toInt() and 255; val d=buffer.get(off+2).toInt() and 255
+            val lo=min(a,min(c,d)); return lo>=165 && max(a,max(c,d))-lo<=75
+        }
         var brightPixels = 0
         for (y in 0 until gh) for (x in 0 until gw) {
             val px = l + x * step
             val py = t + y * step
             if (px >= r || py >= b) continue
-            val offset = py * plane.rowStride + px * plane.pixelStride
-            if (offset < 0 || offset + 2 >= buffer.limit()) continue
-            val red = buffer.get(offset).toInt() and 255
-            val green = buffer.get(offset + 1).toInt() and 255
-            val blue = buffer.get(offset + 2).toInt() and 255
-            val low = min(red, min(green, blue))
-            val high = max(red, max(green, blue))
-            val isBright = low >= 165 && high - low <= 75
+            val isBright = bright(px,py)
             mask[y * gw + x] = isBright
             if (isBright) brightPixels++
         }
@@ -75,7 +83,7 @@ class BallTracker {
         if (seenBuffer.size != mask.size) { seenBuffer = BooleanArray(mask.size); queueBuffer = IntArray(mask.size) }
         val seen = seenBuffer; seen.fill(false)
         val queue = queueBuffer
-        val candidates = ArrayList<Blob>()
+        val coarse = ArrayList<Blob>()
         for (i in mask.indices) {
             if (!mask[i] || seen[i]) continue
             var head = 0
@@ -99,15 +107,38 @@ class BallTracker {
             }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
-            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 2..1800 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
+            if (changed >= 1 && changed.toFloat() / tail >= .18f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) < 3f &&
                 tail.toFloat() / (bw * bh) > .30f) {
-                candidates.add(Blob(l + sumX.toFloat() / tail * step,
+                coarse.add(Blob(l + sumX.toFloat() / tail * step,
                     t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail, (changed.toFloat()/tail * 0.5f + tail.toFloat()/(bw*bh)*0.5f)))
             }
         }
-        candidateCount = candidates.size
+        candidateCount = coarse.size
+        // Bound expensive refinement. Prefer predicted location when a track exists.
+        val prior = previous
+        val age = (now-previousTime).coerceIn(0L,260L).toFloat()
+        val expectedX = (prior?.x ?: 0f)+vx*age
+        val expectedY = (prior?.y ?: 0f)+vy*age
+        val candidates = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
+            .sortedByDescending { q -> q.quality - if(prior!=null) min(2f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }
+            .take(32).mapNotNull { q ->
+                // Full resolution refinement around the coarse connected component.
+                val rad = ceil(q.radius+2).toInt().coerceIn(2,24)
+                val cx=q.x.toInt(); val cy=q.y.toInt()
+                var n=0; var sx=0; var sy=0; var edge=0
+                for (yy in max(t,cy-rad)..min(b-1,cy+rad)) for(xx in max(l,cx-rad)..min(r-1,cx+rad)) {
+                    if (!bright(xx,yy)) continue
+                    n++; sx+=xx; sy+=yy
+                    if(abs(xx-cx)==rad || abs(yy-cy)==rad) edge++
+                }
+                if(n==0 || edge>max(3,n/4)) null else {
+                    val rr=sqrt(n/PI).toFloat()
+                    if(rr>max(14f*w/2000f,(prior?.radius ?: 0f)*1.8f)) null
+                    else Blob(sx.toFloat()/n,sy.toFloat()/n,rr,n,q.quality)
+                }
+            }.toList()
         val prev = previous
-        val dtTrack = (now - previousTime).coerceIn(1L, 150L).toFloat()
+        val dtTrack = (now - previousTime).coerceIn(1L, 260L).toFloat()
         val scale = w / 2000f
         val dtSeed = (now-candidateTime).coerceIn(1L, 250L).toFloat()
         val selected = if (prev == null) {
@@ -137,14 +168,14 @@ class BallTracker {
         lastCandidates = candidates
         if (selected == null) {
             missing++
-            if (prev != null && confirmed && missing <= 3 && now-lastSeen <= 260L) {
+            if (prev != null && confirmed && now-lastSeen <= 180L) {
                 val dt=(now-previousTime).toFloat()
                 predictedPoint=Point((prev.x+vx*dt).coerceIn(0f,w-1f),(prev.y+vy*dt).coerceIn(0f,h-1f),prev.radius)
                 confidence=(confidence-15).coerceAtLeast(0)
                 status="예측 위치 · 누락 $missing · 신뢰 $confidence"
                 return false
             }
-            if (missing >= 3 || now-lastSeen >= 260L) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
+            if (now-lastSeen >= 180L || (prev == null && missing >= 3)) { previous = null; previousTime = 0L; vx = 0f; vy = 0f; streak=0; confirmed=false; confidence=0 }
             if (now - lastSeen >= 650L) locked = false
             status = when {
                 brightPixels == 0 -> "공 미검출: 밝은 픽셀 0"
@@ -208,5 +239,6 @@ class BallTracker {
                 (if (contact) " · 접촉" else "") + " · 신뢰 $confidence · ${if(confirmed) "확정" else "검증"}"
         }
         return trigger
+        } finally { processingMs = (System.nanoTime()-started)/1_000_000f }
     }
 }

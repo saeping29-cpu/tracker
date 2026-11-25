@@ -334,6 +334,7 @@ class CaptureService : Service() {
         }
         if (now - lastNotify > 800L) {
             lastNotify = now
+            diagnostic("perf tracker_ms=${tracker.processingMs} analysis_ms=${SystemClock.elapsedRealtime()-now} fps=$actualFps capture=$captureFps video=$videoFpsActual candidates=${tracker.candidateCount}")
             val message = "수집 $frames / 캡처 $captureFps · 추적 $actualFps · 영상 $videoFpsActual fps / 사진 $savedPictures / MP4 $videoFrames 프레임 / ${if(videoFailed) "오류" else if(recordVideo) "ON" else "OFF"} · ${tracker.status} · 자동 터치 OFF"
             mainHandler.post { if (!stopped) showStatus(message) }
         }
