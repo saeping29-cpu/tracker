@@ -84,6 +84,17 @@ class CaptureService : Service() {
     private val videoThread = HandlerThread("VideoEncoding")
     private lateinit var videoHandler: Handler
     private val videoBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var deep = true
+    private var rawVideo: VideoWriter? = null
+    private val debugPending = java.util.concurrent.atomic.AtomicInteger(0)
+    private val debugThread = HandlerThread("DebugIO")
+    private lateinit var debugHandler: Handler
+    private var debugDropped = 0L
+    private fun debugWrite(dir: java.io.File, name: String, header: String, rows: String) {
+        if(rows.isEmpty()) return
+        if(debugPending.incrementAndGet()>64) { debugPending.decrementAndGet(); debugDropped++; return }
+        debugHandler.post { try { val f=java.io.File(dir,name); if(!f.exists()) f.writeText(header+"\n"); f.appendText(rows) } catch(e:Exception) { diagnostic("debug IO: $e") } finally { debugPending.decrementAndGet() } }
+    }
     private val samples = StringBuilder()
     private var lastAnalysis = 0L
     private var lastVideo = 0L
@@ -103,6 +114,7 @@ class CaptureService : Service() {
         }
     }
     private fun closeVideo(reason: String) {
+        rawVideo?.let { runCatching { it.close() }.onFailure { e -> diagnostic("raw close: $e") } }; rawVideo=null
         val writer = video ?: return
         video = null
         runCatching { writer.close() }.onFailure { diagnostic("close error: $it") }
@@ -116,6 +128,7 @@ class CaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        debugThread.start(); debugHandler=Handler(debugThread.looper)
         videoThread.start()
         videoHandler = Handler(videoThread.looper)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
@@ -154,11 +167,19 @@ class CaptureService : Service() {
         pitchArm = intent?.getStringExtra("pitchArm") ?: "right"
         pitcher = intent?.getStringExtra("pitcher") ?: ""
         session = java.util.UUID.randomUUID().toString()
+        deep = intent?.getBooleanExtra("deepDebug",true) ?: true
+        tracker.debug=deep
+        if(deep) { pitchOnly=false; recordVideo=true; showOverlay=false; savePictures=false; videoFps=30; bitrate=4000000 }
         tapX = intent?.getIntExtra("tapX", 50) ?: 50
         tapY = intent?.getIntExtra("tapY", 50) ?: 50
         region = intent?.getIntArrayExtra("region") ?: region
         target = intent?.getIntArrayExtra("target") ?: target
         timingMs = (intent?.getIntExtra("timingMs", 0) ?: 0).coerceIn(-150, 150)
+        if(deep) {
+            val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
+            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false)
+            debugWrite(dir,"settings.json", "",settings.toString()+"\n")
+        }
         startForeground(1, notification("화면 캡처 준비 중"))
         val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
             intent?.getParcelableExtra("projectionData", Intent::class.java)
@@ -249,10 +270,20 @@ class CaptureService : Service() {
         if (scene.cut || !batting) {
             tracker.reset(); pitchDetector.reset(); trail.clear(); pitchUntil=0L
             if (scene.cut) diagnostic("scene cut: reset")
-            if (wasRecording || scene.cut) videoHandler.post { closeVideo("scene ended"); clearPreRoll(); wasRecording=false }
+            if (!deep && (wasRecording || scene.cut)) videoHandler.post { closeVideo("scene ended"); clearPreRoll(); wasRecording=false }
         }
         val hit = if (batting && !scene.cut) tracker.process(image, region, target, false, now, timingMs) else false
         frames++
+        if(deep) {
+            val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
+            val prefix="$frames,${image.timestamp},"
+            val p=tracker.point; val pred=tracker.predictedPoint
+            debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes", "$prefix${now-sessionStart},$batting,${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()}\n")
+            if(batting && !scene.cut) {
+                debugWrite(dir,"candidates.csv","frame,image_ns,stage,x,y,radius,pixels,bw,bh,changed,quality,result",tracker.debugRows.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
+                debugWrite(dir,"tracks.csv","frame,image_ns,id,x,y,radius,vx,vy,hits,independent,score,track_time,selected",tracker.debugTracks.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
+            }
+        }
         fpsFrames++
         if (fpsStart == 0L) fpsStart = now
         if (now-fpsStart >= 1000L) { actualFps = (fpsFrames*1000L/(now-fpsStart)).toInt(); captureFps=(captureCount*1000L/(now-fpsStart)).toInt(); videoFpsActual=((videoFrames-lastVideoCount)*1000L/(now-fpsStart)).toInt(); lastVideoCount=videoFrames; captureCount=0; fpsFrames=0; fpsStart=now }
@@ -297,7 +328,8 @@ class CaptureService : Service() {
                     if (videoDue) {
                         lastVideo = now
                         val activePitch = !pitchOnly || pitchActive
-                        val copy = android.graphics.Bitmap.createScaledBitmap(cropped, (cropped.width/4)*2, (cropped.height/4)*2, true)
+                        val copy = if(deep) requireNotNull(cropped.copy(android.graphics.Bitmap.Config.ARGB_8888,false)) else android.graphics.Bitmap.createScaledBitmap(cropped, (cropped.width/4)*2, (cropped.height/4)*2, true)
+                        val debugFrame=frames; val imageNs=image.timestamp
                         videoHandler.post {
                             try {
                                 if (!activePitch) {
@@ -310,12 +342,16 @@ class CaptureService : Service() {
                                     if(video==null) {
                                         segmentStart=now; segment++
                                         video=VideoWriter(java.io.File(dir,"analysis_$segment.mp4"),copy.width,copy.height,videoFps,bitrate)
+                                        if(deep) rawVideo=VideoWriter(java.io.File(dir,"raw_$segment.mp4"),copy.width,copy.height,videoFps,bitrate)
                                         while(preRoll.isNotEmpty()) {
                                             val f=preRoll.removeFirst()
                                             try { video?.write(f.bitmap,f.trace); videoFrames++ } finally { f.bitmap.recycle() }
                                         }
                                     }
-                                    video?.write(copy,trace); videoFrames++; wasRecording=true; videoFailed=false
+                                    rawVideo?.write(copy,null)
+                                    video?.write(copy,trace)
+                                    if(deep) { val map=java.io.File(dir,"video_index.csv"); if(!map.exists()) map.writeText("segment,submitted_global,frame,image_ns,elapsed_ms\n"); map.appendText("$segment,$videoFrames,$debugFrame,$imageNs,${now-sessionStart}\n") }
+                                    videoFrames++; wasRecording=true; videoFailed=false
                                 }
                             } catch(e:Exception) { videoFailed=true; retryAt=now+3000L; diagnostic("MP4 error: $e"); closeVideo("encoder error"); clearPreRoll() }
                             finally { if(activePitch && !copy.isRecycled) copy.recycle(); videoBusy.set(false) }
@@ -355,9 +391,10 @@ class CaptureService : Service() {
         workerHandler?.post {
             if (samples.isNotEmpty()) { java.io.File(filesDir,"samples_v4.csv").appendText(samples.toString()); samples.clear() }
             oldReader?.close()
+            debugThread.quitSafely()
             videoHandler.post { closeVideo("service stopped"); clearPreRoll(); videoThread.quitSafely() }
         }
-        if (workerHandler == null) videoThread.quitSafely()
+        if (workerHandler == null) { videoThread.quitSafely(); debugThread.quitSafely() }
         projection?.stop(); projection = null
         workerThread?.quitSafely(); workerThread = null
         workerHandler = null

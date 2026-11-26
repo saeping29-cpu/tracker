@@ -13,6 +13,12 @@ class BallTracker {
     var confirmed = false; private set
     private var streak = 0
     private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float, val startX: Float, val startY: Float, val independent: Int = 0, val id: Long = 0)
+    var debug = false
+    val debugRows = StringBuilder()
+    val debugTracks = StringBuilder()
+    val trackId get() = activeId
+    val velocityX get() = vx
+    val velocityY get() = vy
     private var nextId = 0L
     private var activeId = 0L
     private var tracks = emptyList<Track>()
@@ -52,6 +58,7 @@ class BallTracker {
     fun process(image: Image, roi: IntArray, target: IntArray, lineMode: Boolean, now: Long, timingMs: Int = 0): Boolean {
         val started = System.nanoTime()
         try {
+        debugRows.clear(); debugTracks.clear()
         point = null; predictedPoint=null; candidateCount = 0; contact = false
         val w = image.width
         val h = image.height
@@ -139,6 +146,7 @@ class BallTracker {
             if(tail>=45 && abs(bx-w*.5f)<w*.09f && by in h*.24f..h*.55f) { bodySumX+=bx*tail; bodySumY+=by*tail; bodyWeight+=tail }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
+            if(debug) debugRows.append("coarse,$bx,$by,${max(bw,bh)*step/2f},$tail,$bw,$bh,$changed,,${if(changed>=1 && changed.toFloat()/tail>=.08f && tail in 1..450 && max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)<=2.5f && tail.toFloat()/(bw*bh)>.30f) "pass" else "filter"}\n")
             if (changed >= 1 && changed.toFloat() / tail >= .08f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) <= 2.5f &&
                 tail.toFloat() / (bw * bh) > .30f) {
                 coarse.add(Blob(l + sumX.toFloat() / tail * step,
@@ -219,6 +227,10 @@ class BallTracker {
         for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f,q.x,q.y,id=++nextId))
         tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(16)
         val winner=tracks.filter { (activeId==0L || it.id==activeId) && it.time==now && it.hits>=3 && it.independent>=2 && hypot(it.blob.x-it.startX,it.blob.y-it.startY)>=18f*scale && it.score>=48f && (!bodyValid || hypot(it.blob.x-bodyX,it.blob.y-bodyY)>35f*scale) }.maxByOrNull { it.score }
+        if(debug) {
+            for(q in candidates) debugRows.append("candidate,${q.x},${q.y},${q.radius},${q.pixels},,,,${q.quality},${if(q==winner?.blob) "selected" else "not_selected"}\n")
+            for(tr in tracks) debugTracks.append("${tr.id},${tr.blob.x},${tr.blob.y},${tr.blob.radius},${tr.vx},${tr.vy},${tr.hits},${tr.independent},${tr.score},${tr.time},${tr==winner}\n")
+        }
         val selected=winner?.blob
         if(winner!=null) { activeId=winner.id; confidence=winner.score.toInt().coerceIn(0,100) }
         candidateTime=now
