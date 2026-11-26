@@ -24,7 +24,7 @@ class CaptureService : Service() {
     private var display: VirtualDisplay? = null
     private val tracker = BallTracker()
     private var target = intArrayOf(45, 41, 55, 63)
-    private var region = intArrayOf(38, 77, 62, 28)
+    private var region = intArrayOf(25, 15, 75, 90)
     private var timingMs = 0
     private var tapX = 50
     private var tapY = 50
@@ -242,7 +242,7 @@ class CaptureService : Service() {
         gateClosed = false
         lastGameSeen = now
         captureCount++
-        if (now-lastAnalysis < 30L) return
+        if (now-lastAnalysis < 16L) return
         lastAnalysis = now
         val scene = battingDetector.observe(image)
         batting = scene.batting
@@ -261,24 +261,24 @@ class CaptureService : Service() {
         val confirmed = runCatching { pitchDetector.update(image, if(batting && tracker.confirmed) rawPoint else null, now) }.getOrElse { diagnostic("pitch detector error: $it"); false }
         if (confirmed && batting) pitchUntil = now + 1100L
         val pitchActive = batting && now <= pitchUntil
-        val point = if(pitchActive) rawPoint else null
-        val validContact = pitchActive && tracker.contact
+        val point = if(batting && tracker.confirmed) rawPoint else null
+        val validContact = batting && tracker.confirmed && tracker.contact
         if (validContact) pitchUntil = minOf(pitchUntil, now+100L)
         
         if (now - lastPointTime > 70L || !tracker.confirmed) trail.clear()
         if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
-        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",validContact,frames,tracker.candidateCount,tracker.launch,if(pitchActive) tracker.predictedPoint else null,pitchActive && tracker.confirmed)
-        if (showOverlay && now-lastOverlay >= 33L) {
+        val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",validContact,frames,tracker.candidateCount,tracker.launch,if(batting && tracker.confirmed) tracker.predictedPoint else null,batting && tracker.confirmed)
+        if (showOverlay && now-lastOverlay >= 16L) {
             lastOverlay=now
             mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
         }
-        if (now - lastSample >= 33L) {
+        if (now - lastSample >= 16L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")
             if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
-            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",${hit && pitchActive},${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
+            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",${hit && tracker.confirmed},${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
             if (samples.length >= 32768) { file.appendText(samples.toString()); samples.clear() }
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300

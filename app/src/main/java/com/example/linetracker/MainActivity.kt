@@ -127,7 +127,7 @@ class MainActivity : Activity() {
         bitrateSpinner = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, listOf("1", "2", "4")); setSelection(1) }
         root.addView(bitrateSpinner)
         label("공 탐색 범위: 왼쪽 / 위 / 오른쪽 / 아래 (%)")
-        regionInputs = listOf("왼쪽" to "38", "위" to "77", "오른쪽" to "62", "아래" to "28")
+        regionInputs = listOf("왼쪽" to "25", "위" to "15", "오른쪽" to "75", "아래" to "90")
             .map { field(it.first, it.second) }
         root.addView(Button(this).apply { text = "공 탐색 범위 그리기"; setOnClickListener { openSelector("region") } })
         label("접촉 영역: 왼쪽 / 위 / 오른쪽 / 아래 (%)")
@@ -232,7 +232,7 @@ class MainActivity : Activity() {
         fields.mapIndexed { index, edit -> (edit.text.toString().toIntOrNull() ?: defaults[index]).coerceIn(0, 100) }.toIntArray()
 
     private fun saveSide() {
-        val region = fields(regionInputs, intArrayOf(38,77,62,28))
+        val region = fields(regionInputs, intArrayOf(25,15,75,90))
         val target = fields(targetInputs, intArrayOf(45,41,55,63))
         val tap = fields(listOf(xInput,yInput), intArrayOf(50,50))
         val timing = (timingInput.text.toString().toIntOrNull() ?: 0).coerceIn(-150, 150)
@@ -251,7 +251,7 @@ class MainActivity : Activity() {
             inputs.forEachIndexed { index, input -> input.setText(saved?.getOrNull(index) ?: defaults[index]) }
         }
         restore("launch", launchInputs, listOf("35","25","65","55"))
-        restore("region", regionInputs, listOf("38","77","62","28"))
+        restore("region", regionInputs, listOf("25","15","75","90"))
         restore("target", targetInputs, listOf("45","41","55","63"))
         restore("tap", listOf(xInput,yInput), listOf("50","50"))
         timingInput.setText(prefs.getInt(key("timing"), prefs.getInt("${side}_timing", 0)).toString())
@@ -341,7 +341,7 @@ class MainActivity : Activity() {
             putExtra("pitcher", pitcherInput.text.toString())
             putExtra("projectionData", data)
             putExtra("tapX", tap[0]); putExtra("tapY", tap[1])
-            putExtra("region", fields(regionInputs, intArrayOf(38,77,62,28)))
+            putExtra("region", fields(regionInputs, intArrayOf(25,15,75,90)))
             putExtra("target", fields(targetInputs, intArrayOf(45,41,55,63)))
             putExtra("timingMs", (timingInput.text.toString().toIntOrNull() ?: 0).coerceIn(-150,150))
         }
