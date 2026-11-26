@@ -17,7 +17,8 @@ class CvMotion {
     private var bytes = ByteArray(0)
     private var overlap = ByteArray(0)
     var status = "opencv_pending"; private set
-    fun reset() { previous?.release(); previous=null; input?.release(); input=null; gray?.release(); gray=null; diff?.release(); diff=null }
+    val available get() = ready
+    fun reset() { previous?.release(); previous=null; input?.release(); input=null; gray?.release(); gray=null; diff?.release(); diff=null; oldX=0; oldY=0; status=if(ready) "opencv_pending" else "legacy_fallback" }
     fun update(rgb: ByteArray, w: Int, h: Int, x: Int, y: Int): ByteArray? {
         if (!ready) { status="legacy_fallback"; return null }
         return try {
@@ -26,7 +27,9 @@ class CvMotion {
             Imgproc.cvtColor(src,g,Imgproc.COLOR_RGB2GRAY)
             val old=previous
             if(bytes.size!=w*h) bytes=ByteArray(w*h)
-            bytes.fill(255.toByte())
+            // Unknown/newly exposed pixels are not motion. This avoids treating every
+            // bright UI element as a moving ball during warm-up or a crop change.
+            bytes.fill(0)
             val left=maxOf(x,oldX); val top=maxOf(y,oldY)
             val right=minOf(x+w,oldX+(old?.cols() ?: 0)); val bottom=minOf(y+h,oldY+(old?.rows() ?: 0))
             if(old!=null && right>left && bottom>top) {

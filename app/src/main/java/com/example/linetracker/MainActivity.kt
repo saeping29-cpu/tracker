@@ -123,7 +123,7 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply { text = "공 출발 영역 그리기"; setOnClickListener { openSelector("launch") } })
         pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험, 기본 OFF)"; isChecked = false }
         root.addView(pitchOnly)
-        deepCheck=CheckBox(this).apply { text="3.4.5 경량 성능 기록 (FPS, 좌표, 도착 예측)"; isChecked=true }; root.addView(deepCheck)
+        deepCheck=CheckBox(this).apply { text="3.4.6 경량 성능 기록 (FPS, 좌표, 도착 예측)"; isChecked=true }; root.addView(deepCheck)
         cvCheck=CheckBox(this).apply { text="OpenCV + Kalman 실험 모드"; isChecked=true }; root.addView(cvCheck)
         battingGate = CheckBox(this).apply { text = "일반 모드에서만 타격 화면 제한"; isChecked = false }
         root.addView(battingGate)
@@ -145,17 +145,11 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply { text = "자동 터치 접근성 권한 설정"; setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } })
         root.addView(Button(this).apply {
             text = "학습 데이터 수집 시작 (자동 터치 없음)"
-            setOnClickListener {
-                if (appInput.text.toString().trim().isEmpty() || appInput.text.toString().trim() == packageName || AutoTapService.instance == null) {
-                    Toast.makeText(this@MainActivity,"게임 앱 선택 및 접근성 활성화 필요",Toast.LENGTH_LONG).show(); return@setOnClickListener
-                }
-                collectOnly = true
-                saveSide()
-                // A projection permission token is single-use. Stop old session before requesting another.
-                stopService(Intent(this@MainActivity, CaptureService::class.java))
-                val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                startActivityForResult(manager.createScreenCaptureIntent(), captureRequest)
-            }
+            setOnClickListener { startCapture(true) }
+        })
+        root.addView(Button(this).apply {
+            text = "자동 터치 추적 시작"
+            setOnClickListener { startCapture(false) }
         })
         root.addView(Button(this).apply { text = "추적 중지"; setOnClickListener { stopService(Intent(this@MainActivity, CaptureService::class.java)) } })
         root.addView(Button(this).apply {
@@ -232,6 +226,19 @@ class MainActivity : Activity() {
     }
 
     private fun key(name: String) = "${side}_${form}_${arm}_$name"
+
+    private fun startCapture(collectionOnly: Boolean) {
+        if (appInput.text.toString().trim().isEmpty() || appInput.text.toString().trim() == packageName || AutoTapService.instance == null) {
+            Toast.makeText(this,"게임 앱 선택 및 접근성 활성화 필요",Toast.LENGTH_LONG).show()
+            return
+        }
+        collectOnly = collectionOnly
+        saveSide()
+        // A projection permission token is single-use. Stop old session before requesting another.
+        stopService(Intent(this, CaptureService::class.java))
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        startActivityForResult(manager.createScreenCaptureIntent(), captureRequest)
+    }
     private fun fields(fields: List<EditText>, defaults: IntArray): IntArray =
         fields.mapIndexed { index, edit -> (edit.text.toString().toIntOrNull() ?: defaults[index]).coerceIn(0, 100) }.toIntArray()
 

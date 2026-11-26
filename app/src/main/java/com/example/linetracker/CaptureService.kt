@@ -26,6 +26,7 @@ class CaptureService : Service() {
     private var target = intArrayOf(45, 41, 55, 63)
     private var region = intArrayOf(25, 15, 75, 90)
     private var timingMs = 0
+    private var collectOnly = true
     private var tapX = 50
     private var tapY = 50
     private var screenWidth = 0
@@ -113,6 +114,26 @@ class CaptureService : Service() {
             file.appendText("${System.currentTimeMillis()} $session $message\n")
         }
     }
+    private fun scheduleTap(delayMs: Long) {
+        tapHandler.post {
+            if (stopped) return@post
+            lateinit var action: Runnable
+            action = Runnable {
+                pendingTaps.remove(action)
+                if (stopped || AutoTapService.foregroundPackage != gamePackage) {
+                    diagnostic("tap cancelled: foreground=${AutoTapService.foregroundPackage}")
+                    return@Runnable
+                }
+                tapRequests++
+                val x = screenWidth * tapX / 100f
+                val y = screenHeight * tapY / 100f
+                if (AutoTapService.tap(x, y)) tapAccepted++
+                diagnostic("tap request=$tapRequests accepted=$tapAccepted delay_ms=$delayMs x=$x y=$y")
+            }
+            pendingTaps.add(action)
+            tapHandler.postDelayed(action, delayMs)
+        }
+    }
     private fun closeVideo(reason: String) {
         rawVideo?.let { runCatching { it.close() }.onFailure { e -> diagnostic("raw close: $e") } }; rawVideo=null
         val writer = video
@@ -150,6 +171,7 @@ class CaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (projection != null) return START_NOT_STICKY
         stopped = false
+        collectOnly = intent?.getBooleanExtra("collectOnly", true) ?: true
         gamePackage = intent?.getStringExtra("gamePackage") ?: ""
         pitchOnly = intent?.getBooleanExtra("pitchOnly",true) ?: true
         battingGate = intent?.getBooleanExtra("battingGate",false) ?: false
@@ -178,7 +200,7 @@ class CaptureService : Service() {
         timingMs = (intent?.getIntExtra("timingMs", 0) ?: 0).coerceIn(-150, 150)
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
-            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.5").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
+            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.6").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
             debugWrite(dir,"settings.json", "",settings.toString()+"\n")
         }
         startForeground(1, notification("화면 캡처 준비 중"))
@@ -274,6 +296,9 @@ class CaptureService : Service() {
             if (!deep && (wasRecording || scene.cut)) videoHandler.post { closeVideo("scene ended"); clearPreRoll(); wasRecording=false }
         }
         val hit = if (batting && !scene.cut) tracker.process(image, region, target, false, now, timingMs) else false
+        // Negative timing is handled by predictive contact inside BallTracker.
+        // Positive timing delays the accessibility gesture after observed contact.
+        if (hit && !collectOnly) scheduleTap(timingMs.coerceAtLeast(0).toLong())
         frames++
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }

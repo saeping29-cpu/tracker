@@ -84,17 +84,20 @@ class BallTracker {
         if (key != roiKey) { reset(); roiKey = key }
         val sxScale=w/2000f; val syScale=h/1200f
         val best=tracks.firstOrNull { it.id==activeId } ?: tracks.firstOrNull()
-        val wide=frameIndex%3==0 || missing>=3 && best!=null
+        // The legacy mask has no absolute crop coordinates. Keep its crop fixed so
+        // consecutive masks describe the same pixels when OpenCV is unavailable/off.
+        val dynamicCrop=useOpenCv && motion.available
+        val wide=dynamicCrop && (frameIndex%3==0 || missing>=3 && best!=null)
         val ageMs=if(best!=null) (now-best.time).coerceIn(0L,200L) else 0L
         val half=if(best!=null) max(80f*sxScale*(1 shl missing.coerceIn(0,2)), 24f*sxScale+hypot(best.vx,best.vy)*ageMs*.8f) else 0f
         val cx=if(best!=null) best.blob.x+best.vx*ageMs else (launch[0]+launch[2])*w/200f
         val cy=if(best!=null) best.blob.y+best.vy*ageMs else (launch[1]+launch[3])*h/200f
-        val l = (if(wide) min(700*sxScale,cx-half) else if(best!=null) cx-half else min(launch[0],launch[2])*w/100f).toInt().coerceIn(outerL,outerR-1)
-        val r = (if(wide) max(1300*sxScale,cx+half) else if(best!=null) cx+half else max(launch[0],launch[2])*w/100f).toInt().coerceIn(l+1,outerR)
-        val t = (if(wide) min(320*syScale,cy-half) else if(best!=null) cy-half else min(launch[1],launch[3])*h/100f).toInt().coerceIn(outerT,outerB-1)
-        val b = (if(wide) max(940*syScale,cy+half) else if(best!=null) cy+half else max(launch[1],launch[3])*h/100f).toInt().coerceIn(t+1,outerB)
+        val l = (if(!dynamicCrop) outerL.toFloat() else if(wide) min(700*sxScale,cx-half) else if(best!=null) cx-half else min(launch[0],launch[2])*w/100f).toInt().coerceIn(outerL,outerR-1)
+        val r = (if(!dynamicCrop) outerR.toFloat() else if(wide) max(1300*sxScale,cx+half) else if(best!=null) cx+half else max(launch[0],launch[2])*w/100f).toInt().coerceIn(l+1,outerR)
+        val t = (if(!dynamicCrop) outerT.toFloat() else if(wide) min(320*syScale,cy-half) else if(best!=null) cy-half else min(launch[1],launch[3])*h/100f).toInt().coerceIn(outerT,outerB-1)
+        val b = (if(!dynamicCrop) outerB.toFloat() else if(wide) max(940*syScale,cy+half) else if(best!=null) cy+half else max(launch[1],launch[3])*h/100f).toInt().coerceIn(t+1,outerB)
         scanPixels=(r-l)*(b-t)
-        scanMode=if(wide) "wide" else if(best!=null) "focus" else "release"
+        scanMode=if(!dynamicCrop) "legacy-fixed" else if(wide) "wide" else if(best!=null) "focus" else "release"
         val cropKey="$l:$t:$r:$b"
         if(cropKey!=lastCropKey) { priorMask=null; lastCropKey=cropKey }
         val step = 2
