@@ -115,9 +115,9 @@ class CaptureService : Service() {
     }
     private fun closeVideo(reason: String) {
         rawVideo?.let { runCatching { it.close() }.onFailure { e -> diagnostic("raw close: $e") } }; rawVideo=null
-        val writer = video ?: return
+        val writer = video
         video = null
-        runCatching { writer.close() }.onFailure { diagnostic("close error: $it") }
+        runCatching { writer?.close() }.onFailure { diagnostic("close error: $it") }
         diagnostic("MP4 closed: $reason; submitted=$videoFrames")
     }
     private var fpsStart = 0L
@@ -177,7 +177,7 @@ class CaptureService : Service() {
         timingMs = (intent?.getIntExtra("timingMs", 0) ?: 0).coerceIn(-150, 150)
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
-            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false)
+            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.2").put("raw_only",true).put("batting_gate_bypassed",true)
             debugWrite(dir,"settings.json", "",settings.toString()+"\n")
         }
         startForeground(1, notification("화면 캡처 준비 중"))
@@ -266,7 +266,7 @@ class CaptureService : Service() {
         if (now-lastAnalysis < 16L) return
         lastAnalysis = now
         val scene = battingDetector.observe(image)
-        batting = scene.batting
+        batting = deep || !battingGate || scene.batting
         if (scene.cut || !batting) {
             tracker.reset(); pitchDetector.reset(); trail.clear(); pitchUntil=0L
             if (scene.cut) diagnostic("scene cut: reset")
@@ -278,7 +278,9 @@ class CaptureService : Service() {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
             val prefix="$frames,${image.timestamp},"
             val p=tracker.point; val pred=tracker.predictedPoint
-            debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes", "$prefix${now-sessionStart},$batting,${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()}\n")
+            val a=tracker.arrival
+            debugWrite(dir,"arrival.csv","frame,image_ns,track_id,eta_ms,x,y,radius,observed_contact,strike_probability,decision", "$prefix${tracker.trackId},${a?.ms ?: ""},${a?.x ?: ""},${a?.y ?: ""},${a?.radius ?: ""},${tracker.contact},,${if(a!=null) "FORECAST_ONLY" else "WAIT"}\n")
+            debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes,tracker_enabled,green_pixels,scene_changed", "$prefix${now-sessionStart},${scene.batting},${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()},${batting && !scene.cut},${scene.green},${scene.changed}\n")
             if(batting && !scene.cut) {
                 debugWrite(dir,"candidates.csv","frame,image_ns,stage,x,y,radius,pixels,bw,bh,changed,quality,result",tracker.debugRows.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
                 debugWrite(dir,"tracks.csv","frame,image_ns,id,x,y,radius,vx,vy,hits,independent,score,track_time,selected",tracker.debugTracks.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
@@ -338,10 +340,10 @@ class CaptureService : Service() {
                                     preRoll.addLast(BufferedFrame(now,copy,trace))
                                     while(preRoll.size>videoFps*2 || (preRoll.isNotEmpty() && now-preRoll.peekFirst().time>2000L)) preRoll.removeFirst().bitmap.recycle()
                                 } else {
-                                    if(video!=null && now-segmentStart>=30000L) closeVideo("segment")
-                                    if(video==null) {
+                                    if((video!=null || rawVideo!=null) && now-segmentStart>=30000L) closeVideo("segment")
+                                    if(video==null && rawVideo==null) {
                                         segmentStart=now; segment++
-                                        video=VideoWriter(java.io.File(dir,"analysis_$segment.mp4"),copy.width,copy.height,videoFps,bitrate)
+                                        if(!deep) video=VideoWriter(java.io.File(dir,"analysis_$segment.mp4"),copy.width,copy.height,videoFps,bitrate)
                                         if(deep) rawVideo=VideoWriter(java.io.File(dir,"raw_$segment.mp4"),copy.width,copy.height,videoFps,bitrate)
                                         while(preRoll.isNotEmpty()) {
                                             val f=preRoll.removeFirst()

@@ -122,8 +122,8 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply { text = "공 출발 영역 그리기"; setOnClickListener { openSelector("launch") } })
         pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험, 기본 OFF)"; isChecked = false }
         root.addView(pitchOnly)
-        deepCheck=CheckBox(this).apply { text="3.4 정밀 분석 (원본+분석 영상, 후보 기록)"; isChecked=true }; root.addView(deepCheck)
-        battingGate = CheckBox(this).apply { text = "타격 화면 판단 기록 (분석 차단 없음)"; isChecked = false }
+        deepCheck=CheckBox(this).apply { text="3.4.2 정밀 분석 (원본 영상, 후보 기록)"; isChecked=true }; root.addView(deepCheck)
+        battingGate = CheckBox(this).apply { text = "일반 모드에서만 타격 화면 제한"; isChecked = false }
         root.addView(battingGate)
         label("영상 비트레이트 (Mbps, 절반 해상도)")
         bitrateSpinner = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, listOf("1", "2", "4")); setSelection(1) }

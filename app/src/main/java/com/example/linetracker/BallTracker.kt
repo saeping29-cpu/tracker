@@ -33,10 +33,12 @@ class BallTracker {
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
+    data class Arrival(val ms: Float, val x: Float, val y: Float, val radius: Float)
+    var arrival: Arrival? = null; private set
     var processingMs = 0f; private set
     private var spareMask = BooleanArray(0)
     private var seenBuffer = BooleanArray(0)
@@ -59,7 +61,7 @@ class BallTracker {
         val started = System.nanoTime()
         try {
         debugRows.clear(); debugTracks.clear()
-        point = null; predictedPoint=null; candidateCount = 0; contact = false
+        arrival=null; point = null; predictedPoint=null; candidateCount = 0; contact = false
         val w = image.width
         val h = image.height
         if (w <= 0 || h <= 0 || roi.size < 4 || target.size < 4) {
@@ -146,7 +148,7 @@ class BallTracker {
             if(tail>=45 && abs(bx-w*.5f)<w*.09f && by in h*.24f..h*.55f) { bodySumX+=bx*tail; bodySumY+=by*tail; bodyWeight+=tail }
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
-            if(debug) debugRows.append("coarse,$bx,$by,${max(bw,bh)*step/2f},$tail,$bw,$bh,$changed,,${if(changed>=1 && changed.toFloat()/tail>=.08f && tail in 1..450 && max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)<=2.5f && tail.toFloat()/(bw*bh)>.30f) "pass" else "filter"}\n")
+            if(debug) debugRows.append("coarse,$bx,$by,${max(bw,bh)*step/2f},$tail,$bw,$bh,$changed,,${if(changed>=1 && changed.toFloat()/tail>=.08f && tail in 1..450 && max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)<=2.5f && tail.toFloat()/(bw*bh)>.30f) "pass" else listOfNotNull(if(changed<1 || changed.toFloat()/tail<.08f) "motion" else null, if(tail !in 1..450) "size" else null, if(max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)>2.5f) "aspect" else null, if(tail.toFloat()/(bw*bh)<=.30f) "density" else null).joinToString("|")}\n")
             if (changed >= 1 && changed.toFloat() / tail >= .08f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) <= 2.5f &&
                 tail.toFloat() / (bw * bh) > .30f) {
                 coarse.add(Blob(l + sumX.toFloat() / tail * step,
@@ -302,6 +304,20 @@ class BallTracker {
             radiusRate=.7f*radiusRate+.3f*(selected.radius-prev.radius)/dtTrack
             vx=.35f*vx+.65f*nx; vy=.35f*vy+.65f*ny
         } else { ax=0f; ay=0f; radiusRate=0f; vx=winner?.vx ?: 0f; vy=winner?.vy ?: 0f }
+        // Diagnostic forecast only: first future overlap with the configured timing region.
+        // This is not a calibrated strike probability or an actual swing command.
+        if (confirmed && prev != null && dt in 1..100 && !contact && hypot(vx,vy) > .08f) {
+            for (ms in 1..250) {
+                val f=ms.toFloat()
+                val x=selected.x+vx*f+.5f*ax*f*f
+                val y=selected.y+vy*f+.5f*ay*f*f
+                val rad=(selected.radius+radiusRate*f).coerceAtLeast(.5f)
+                if (!x.isFinite() || !y.isFinite() || x !in 0f..w.toFloat() || y !in 0f..h.toFloat()) break
+                if (hypot(x-x.coerceIn(tl,tr),y-y.coerceIn(tt,tb))<=rad) {
+                    arrival=Arrival(f,x,y,rad); break
+                }
+            }
+        }
         previous = selected
         previousTime = now
         if (trigger) {
