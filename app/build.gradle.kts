@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.linetracker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "3.3"
+        versionCode = 35
+        versionName = "3.4-debug"
     }
 
     buildTypes {
