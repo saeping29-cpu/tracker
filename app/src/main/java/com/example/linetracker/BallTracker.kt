@@ -14,6 +14,11 @@ class BallTracker {
     private var streak = 0
     private data class Track(val blob: Blob, val time: Long, val vx: Float, val vy: Float, val hits: Int, val score: Float, val startX: Float, val startY: Float, val independent: Int = 0, val id: Long = 0)
     var debug = false
+    var useOpenCv = true
+    private val motion = CvMotion()
+    private val filter = MotionKalman()
+    private var filterId = 0L
+    val engine get() = if (useOpenCv) motion.status else "legacy"
     val debugRows = StringBuilder()
     val debugTracks = StringBuilder()
     val trackId get() = activeId
@@ -33,7 +38,7 @@ class BallTracker {
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(35,25,65,55)
-    fun reset() { arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { motion.reset(); filterId=0L; arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
@@ -105,6 +110,7 @@ class BallTracker {
             val a=rgb[off].toInt() and 255; val c=rgb[off+1].toInt() and 255; val d=rgb[off+2].toInt() and 255
             val lo=min(a,min(c,d)); return lo>=175 && max(a,max(c,d))-lo<=90
         }
+        val cvMotion = if (useOpenCv) motion.update(rgb, rw, rh) else null
         frameIndex++
         var brightPixels = 0
         for (y in 0 until gh) for (x in 0 until gw) {
@@ -133,7 +139,10 @@ class BallTracker {
             var minX = gw; var maxX = 0; var minY = gh; var maxY = 0
             while (head < tail) {
                 val at = queue[head++]
-                if (oldMask != null && oldMask.size == mask.size && !oldMask[at]) changed++
+                if (cvMotion != null) {
+                    val mx=(at % gw)*step; val my=(at / gw)*step
+                    if ((cvMotion[my*rw+mx].toInt() and 255)>0) changed++
+                } else if (oldMask != null && oldMask.size == mask.size && !oldMask[at]) changed++
                 val x = at % gw
                 val y = at / gw
                 sumX += x; sumY += y
@@ -190,6 +199,7 @@ class BallTracker {
         val extra=ArrayList<Blob>()
         fun scan(cx:Int,cy:Int,rad:Int) {
             for(y in max(t+2,cy-rad)..min(b-3,cy+rad) step 1) for(x in max(l+2,cx-rad)..min(r-3,cx+rad) step 1) {
+                if(cvMotion != null && (cvMotion[(y-t)*rw+x-l].toInt() and 255)==0) continue
                 if(!bright(x,y) || bright(x-2,y) || bright(x+2,y) || bright(x,y-2) || bright(x,y+2)) continue
                 if(extra.any { abs(it.x-x)<4 && abs(it.y-y)<4 }) continue
                 extra.add(Blob(x.toFloat(),y.toFloat(),1.5f,5,.65f))
@@ -212,7 +222,9 @@ class BallTracker {
             val matches=candidates.mapNotNull { q ->
                 val dx=q.x-tr.blob.x; val dy=q.y-tr.blob.y; val dist=hypot(dx,dy)
                 val err=if(tr.hits<2) dist else hypot(q.x-ex,q.y-ey)
-                if(dist<2f*scale || err>gate || abs(q.radius-tr.blob.radius)>max(5f*scale,tr.blob.radius)) null
+                val reversal = tr.hits>=3 && hypot(tr.vx,tr.vy)*dt>4f*scale && dx*tr.vx+dy*tr.vy < 0f
+                val radiusGate = if(useOpenCv) max(1.5f*scale,tr.blob.radius*.65f) else max(5f*scale,tr.blob.radius)
+                if(dist<2f*scale || err>gate || abs(q.radius-tr.blob.radius)>radiusGate || (useOpenCv && reversal)) null
                 else {
                     val progress=hypot(q.x-tr.startX,q.y-tr.startY)
                     val separation=hypot(q.x-bodyX,q.y-bodyY)
@@ -304,6 +316,14 @@ class BallTracker {
             radiusRate=.7f*radiusRate+.3f*(selected.radius-prev.radius)/dtTrack
             vx=.35f*vx+.65f*nx; vy=.35f*vy+.65f*ny
         } else { ax=0f; ay=0f; radiusRate=0f; vx=winner?.vx ?: 0f; vy=winner?.vy ?: 0f }
+        if (useOpenCv && winner != null) {
+            if (filterId != winner.id || dt !in 1..120) {
+                filter.reset(selected.x, selected.y, vx, vy); filterId=winner.id
+            } else {
+                filter.update(selected.x, selected.y, dt.toFloat())
+                vx=filter.vx; vy=filter.vy; ax=0f; ay=0f
+            }
+        }
         // Diagnostic forecast only: first future overlap with the configured timing region.
         // This is not a calibrated strike probability or an actual swing command.
         if (confirmed && prev != null && dt in 1..100 && !contact && hypot(vx,vy) > .08f) {
