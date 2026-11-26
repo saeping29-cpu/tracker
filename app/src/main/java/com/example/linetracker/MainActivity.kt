@@ -119,11 +119,11 @@ class MainActivity : Activity() {
             android.app.AlertDialog.Builder(this@MainActivity).setTitle("수집 대상 앱").setItems(apps.map { it.loadLabel(packageManager).toString() }.toTypedArray()) { _, i -> appInput.setText(apps[i].activityInfo.packageName) }.show()
         } })
         label("공 출발 영역 (%)")
-        launchInputs = listOf("35","25","65","55").map { field("출발 좌표",it) }
+        launchInputs = listOf("42","30","58","50").map { field("출발 좌표",it) }
         root.addView(Button(this).apply { text = "공 출발 영역 그리기"; setOnClickListener { openSelector("launch") } })
         pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험, 기본 OFF)"; isChecked = false }
         root.addView(pitchOnly)
-        deepCheck=CheckBox(this).apply { text="3.4.4 경량 성능 기록 (FPS, 좌표, 도착 예측)"; isChecked=true }; root.addView(deepCheck)
+        deepCheck=CheckBox(this).apply { text="3.4.5 경량 성능 기록 (FPS, 좌표, 도착 예측)"; isChecked=true }; root.addView(deepCheck)
         cvCheck=CheckBox(this).apply { text="OpenCV + Kalman 실험 모드"; isChecked=true }; root.addView(cvCheck)
         battingGate = CheckBox(this).apply { text = "일반 모드에서만 타격 화면 제한"; isChecked = false }
         root.addView(battingGate)
@@ -240,7 +240,7 @@ class MainActivity : Activity() {
         val target = fields(targetInputs, intArrayOf(45,41,55,63))
         val tap = fields(listOf(xInput,yInput), intArrayOf(50,50))
         val timing = (timingInput.text.toString().toIntOrNull() ?: 0).coerceIn(-150, 150)
-        prefs.edit().putString("game_package", appInput.text.toString().trim()).putString(key("launch"), fields(launchInputs,intArrayOf(35,25,65,55)).joinToString(",")).putString("pitcher", pitcherInput.text.toString()).putString(key("region"), region.joinToString(","))
+        prefs.edit().putString("game_package", appInput.text.toString().trim()).putString(key("launch"), fields(launchInputs,intArrayOf(42,30,58,50)).joinToString(",")).putString("pitcher", pitcherInput.text.toString()).putString(key("region"), region.joinToString(","))
             .putString(key("target"), target.joinToString(","))
             .putString(key("tap"), tap.joinToString(","))
             .putInt(key("timing"), timing).apply()
@@ -254,7 +254,7 @@ class MainActivity : Activity() {
             val saved = prefs.getString(key(name), prefs.getString("${side}_$name", old))?.split(",")
             inputs.forEachIndexed { index, input -> input.setText(saved?.getOrNull(index) ?: defaults[index]) }
         }
-        restore("launch", launchInputs, listOf("35","25","65","55"))
+        restore("launch", launchInputs, listOf("42","30","58","50"))
         restore("region", regionInputs, listOf("25","15","75","90"))
         restore("target", targetInputs, listOf("45","41","55","63"))
         restore("tap", listOf(xInput,yInput), listOf("50","50"))
@@ -334,7 +334,7 @@ class MainActivity : Activity() {
             putExtra("pitchOnly",pitchOnly.isChecked)
             putExtra("battingGate",battingGate.isChecked)
             putExtra("bitrate",listOf(1,2,4)[bitrateSpinner.selectedItemPosition])
-            putExtra("launch",fields(launchInputs,intArrayOf(35,25,65,55)))
+            putExtra("launch",fields(launchInputs,intArrayOf(42,30,58,50)))
             putExtra("savePictures", pictures.isChecked)
             putExtra("showOverlay", overlayCheck.isChecked)
             putExtra("saveAnalysis", analysisCheck.isChecked)

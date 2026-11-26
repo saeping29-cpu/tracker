@@ -170,7 +170,7 @@ class CaptureService : Service() {
         deep = intent?.getBooleanExtra("deepDebug",true) ?: true
         tracker.debug=false
         tracker.useOpenCv=intent?.getBooleanExtra("useOpenCv",true) ?: true
-        if(deep) { pitchOnly=false; showOverlay=false; savePictures=false; videoFps=30; bitrate=4000000 }
+        if(deep) { recordVideo=false; pitchOnly=false; showOverlay=false; savePictures=false; videoFps=30; bitrate=4000000 }
         tapX = intent?.getIntExtra("tapX", 50) ?: 50
         tapY = intent?.getIntExtra("tapY", 50) ?: 50
         region = intent?.getIntArrayExtra("region") ?: region
@@ -178,7 +178,7 @@ class CaptureService : Service() {
         timingMs = (intent?.getIntExtra("timingMs", 0) ?: 0).coerceIn(-150, 150)
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
-            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.4").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
+            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.5").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
             debugWrite(dir,"settings.json", "",settings.toString()+"\n")
         }
         startForeground(1, notification("화면 캡처 준비 중"))
@@ -377,7 +377,7 @@ class CaptureService : Service() {
         }
         if (now - lastNotify > 800L) {
             lastNotify = now
-            diagnostic("perf tracker_ms=${tracker.processingMs} analysis_ms=${SystemClock.elapsedRealtime()-now} fps=$actualFps capture=$captureFps video=$videoFpsActual candidates=${tracker.candidateCount}")
+            diagnostic("perf scan=${tracker.scanMode} pixels=${tracker.scanPixels} tracker_ms=${tracker.processingMs} analysis_ms=${SystemClock.elapsedRealtime()-now} fps=$actualFps capture=$captureFps video=$videoFpsActual candidates=${tracker.candidateCount}")
             val message = "수집 $frames / 캡처 $captureFps · 추적 $actualFps · 영상 $videoFpsActual fps / 사진 $savedPictures / MP4 $videoFrames 프레임 / ${if(videoFailed) "오류" else if(recordVideo) "ON" else "OFF"} · ${tracker.status} · 자동 터치 OFF"
             mainHandler.post { if (!stopped) showStatus(message) }
         }

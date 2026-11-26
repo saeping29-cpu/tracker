@@ -37,11 +37,14 @@ class BallTracker {
     var candidateCount = 0; private set
     var contact = false; private set
     private var previous: Blob? = null
-    var launch = intArrayOf(35,25,65,55)
+    var launch = intArrayOf(42,30,58,50)
     fun reset() { motion.reset(); filterId=0L; arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
+    private var lastCropKey = ""
+    var scanPixels=0; private set
+    var scanMode="release"; private set
     data class Arrival(val ms: Float, val x: Float, val y: Float, val radius: Float)
     var arrival: Arrival? = null; private set
     var processingMs = 0f; private set
@@ -73,12 +76,27 @@ class BallTracker {
             status = "화면/좌표 오류"
             return false
         }
-        val l = (min(roi[0], roi[2]) * w / 100).coerceIn(0, w - 1)
-        val r = (max(roi[0], roi[2]) * w / 100).coerceIn(l + 1, w)
-        val t = (min(roi[1], roi[3]) * h / 100).coerceIn(0, h - 1)
-        val b = (max(roi[1], roi[3]) * h / 100).coerceIn(t + 1, h)
-        val key = "$w:$h:$l:$r:$t:$b"
+        val outerL = (min(roi[0], roi[2]) * w / 100).coerceIn(0, w-1)
+        val outerR = (max(roi[0], roi[2]) * w / 100).coerceIn(outerL+1,w)
+        val outerT = (min(roi[1], roi[3]) * h / 100).coerceIn(0,h-1)
+        val outerB = (max(roi[1], roi[3]) * h / 100).coerceIn(outerT+1,h)
+        val key = "$w:$h:$outerL:$outerR:$outerT:$outerB"
         if (key != roiKey) { reset(); roiKey = key }
+        val sxScale=w/2000f; val syScale=h/1200f
+        val best=tracks.firstOrNull { it.id==activeId } ?: tracks.firstOrNull()
+        val wide=frameIndex%3==0 || missing>=3 && best!=null
+        val ageMs=if(best!=null) (now-best.time).coerceIn(0L,200L) else 0L
+        val half=if(best!=null) max(80f*sxScale*(1 shl missing.coerceIn(0,2)), 24f*sxScale+hypot(best.vx,best.vy)*ageMs*.8f) else 0f
+        val cx=if(best!=null) best.blob.x+best.vx*ageMs else (launch[0]+launch[2])*w/200f
+        val cy=if(best!=null) best.blob.y+best.vy*ageMs else (launch[1]+launch[3])*h/200f
+        val l = (if(wide) min(700*sxScale,cx-half) else if(best!=null) cx-half else min(launch[0],launch[2])*w/100f).toInt().coerceIn(outerL,outerR-1)
+        val r = (if(wide) max(1300*sxScale,cx+half) else if(best!=null) cx+half else max(launch[0],launch[2])*w/100f).toInt().coerceIn(l+1,outerR)
+        val t = (if(wide) min(320*syScale,cy-half) else if(best!=null) cy-half else min(launch[1],launch[3])*h/100f).toInt().coerceIn(outerT,outerB-1)
+        val b = (if(wide) max(940*syScale,cy+half) else if(best!=null) cy+half else max(launch[1],launch[3])*h/100f).toInt().coerceIn(t+1,outerB)
+        scanPixels=(r-l)*(b-t)
+        scanMode=if(wide) "wide" else if(best!=null) "focus" else "release"
+        val cropKey="$l:$t:$r:$b"
+        if(cropKey!=lastCropKey) { priorMask=null; lastCropKey=cropKey }
         val step = 2
         val gw = max(1, (r - l + step - 1) / step)
         val gh = max(1, (b - t + step - 1) / step)
@@ -110,7 +128,7 @@ class BallTracker {
             val a=rgb[off].toInt() and 255; val c=rgb[off+1].toInt() and 255; val d=rgb[off+2].toInt() and 255
             val lo=min(a,min(c,d)); return lo>=175 && max(a,max(c,d))-lo<=90
         }
-        val cvMotion = if (useOpenCv) motion.update(rgb, rw, rh) else null
+        val cvMotion = if (useOpenCv) motion.update(rgb, rw, rh, l, t) else null
         frameIndex++
         var brightPixels = 0
         for (y in 0 until gh) for (x in 0 until gw) {
@@ -142,7 +160,7 @@ class BallTracker {
                 if (cvMotion != null) {
                     val mx=(at % gw)*step; val my=(at / gw)*step
                     if ((cvMotion[my*rw+mx].toInt() and 255)>0) changed++
-                } else if (oldMask != null && oldMask.size == mask.size && !oldMask[at]) changed++
+                } else if (oldMask == null || (oldMask.size == mask.size && !oldMask[at])) changed++
                 val x = at % gw
                 val y = at / gw
                 sumX += x; sumY += y
@@ -168,7 +186,7 @@ class BallTracker {
         val newBodyY=if(bodyWeight>0) bodySumY/bodyWeight else h*.39f
         val bodyDx=if(bodyValid && bodyWeight>0) newBodyX-bodyX else 0f
         val bodyDy=if(bodyValid && bodyWeight>0) newBodyY-bodyY else 0f
-        bodyX=newBodyX; bodyY=newBodyY; bodyValid=bodyWeight>0
+        if(bodyWeight>0) { bodyX=newBodyX; bodyY=newBodyY; bodyValid=true }
         candidateCount = coarse.size
         // Bound expensive refinement. Prefer predicted location when a track exists.
         val prior = previous
