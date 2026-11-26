@@ -2,7 +2,7 @@ package com.example.linetracker
 import android.media.Image
 import kotlin.math.abs
 class BattingScreenDetector {
-    data class Scene(val batting:Boolean,val cut:Boolean)
+    data class Scene(val batting:Boolean,val cut:Boolean,val green:Int,val changed:Int)
     private val prior=IntArray(96)
     private var initialized=false
     private var votes=0
@@ -30,6 +30,6 @@ class BattingScreenDetector {
         val cut=initialized && changed>=42
         initialized=true
         votes=if(cut) 0 else if(green>=23) (votes+1).coerceAtMost(3) else (votes-2).coerceAtLeast(0)
-        return Scene(votes>=2,cut)
+        return Scene(votes>=2,cut,green,changed)
     }
 }
