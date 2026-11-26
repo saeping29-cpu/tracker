@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.linetracker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 37
-        versionName = "3.4.2-debug"
+        versionCode = 38
+        versionName = "3.4.3-debug"
     }
 
     buildTypes {
@@ -30,3 +30,5 @@ android {
         jvmTarget = "17"
     }
 }
+
+ dependencies { implementation("org.opencv:opencv:4.10.0") }
