@@ -177,7 +177,7 @@ class BallTracker {
         val expectedY = (prior?.y ?: 0f)+vy*age+0.5f*ay*age*age
         val refined = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
             .sortedByDescending { q -> q.quality - if(prior!=null) min(2f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }
-            .take(32).plus(coarse.sortedByDescending { it.quality }.take(24).asSequence()).distinct().mapNotNull { q ->
+            .take(8).plus(coarse.sortedByDescending { it.quality }.take(4).asSequence()).distinct().mapNotNull { q ->
                 // Full resolution refinement around the coarse connected component.
                 val rad = ceil(q.radius+2).toInt().coerceIn(2,24)
                 val cx=q.x.toInt(); val cy=q.y.toInt()
@@ -198,17 +198,18 @@ class BallTracker {
         // Native-resolution search near all surviving hypotheses and release region.
         val extra=ArrayList<Blob>()
         fun scan(cx:Int,cy:Int,rad:Int) {
+            if(extra.size>=8) return
             for(y in max(t+2,cy-rad)..min(b-3,cy+rad) step 1) for(x in max(l+2,cx-rad)..min(r-3,cx+rad) step 1) {
                 if(cvMotion != null && (cvMotion[(y-t)*rw+x-l].toInt() and 255)==0) continue
                 if(!bright(x,y) || bright(x-2,y) || bright(x+2,y) || bright(x,y-2) || bright(x,y+2)) continue
                 if(extra.any { abs(it.x-x)<4 && abs(it.y-y)<4 }) continue
                 extra.add(Blob(x.toFloat(),y.toFloat(),1.5f,5,.65f))
-                if(extra.size>=48) return
+                if(extra.size>=8) return
             }
         }
-        for(q in tracks.take(5)) { val dt=(now-q.time).coerceIn(0L,200L); scan((q.blob.x+q.vx*dt).toInt(),(q.blob.y+q.vy*dt).toInt(),24) }
+        for(q in tracks.take(3)) { val dt=(now-q.time).coerceIn(0L,200L); scan((q.blob.x+q.vx*dt).toInt(),(q.blob.y+q.vy*dt).toInt(),24) }
         if(tracks.isEmpty() || frameIndex%3==0) scan((launch[0]+launch[2])*w/200,(launch[1]+launch[3])*h/200,40)
-        val candidates=(refined+extra).distinctBy { (it.x.toInt()/3)*10000+it.y.toInt()/3 }
+        val candidates=(refined+extra).distinctBy { (it.x.toInt()/3)*10000+it.y.toInt()/3 }.sortedByDescending { q -> q.quality - if(prior!=null) min(1f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }.take(8)
         candidateCount=candidates.size
         val prev=previous
         val dtTrack=(now-previousTime).coerceIn(1L,260L).toFloat()
@@ -231,7 +232,7 @@ class BallTracker {
                     val relative=hypot(dx-bodyDx,dy-bodyDy)
                     val independent=if(relative>4f*scale) tr.independent+1 else (tr.independent-1).coerceAtLeast(0)
                     val bodyPenalty=if(bodyValid && separation<45f*scale) 22f else 0f
-                    val score=(tr.score*.55f+q.quality*15f+18f-err/gate*14f+min(18f,progress/scale*.3f)+min(12f,independent*4f)-bodyPenalty).coerceIn(0f,100f)
+                    val score=(tr.score*.70f+q.quality*12f+18f-err/gate*14f+min(18f,progress/scale*.3f)+min(12f,independent*4f)-bodyPenalty).coerceIn(0f,100f)
                     Track(q,now,dx/dt,dy/dt,tr.hits+1,score,tr.startX,tr.startY,independent,tr.id)
                 }
             }.sortedByDescending { it.score }.take(2)
@@ -239,7 +240,7 @@ class BallTracker {
             if(matches.isEmpty() && dt<=120) next.add(tr.copy(score=tr.score-8))
         }
         for(q in candidates) if(q.x in min(launch[0],launch[2])*w/100f..max(launch[0],launch[2])*w/100f && q.y in min(launch[1],launch[3])*h/100f..max(launch[1],launch[3])*h/100f) next.add(Track(q,now,0f,0f,1,q.quality*15f,q.x,q.y,id=++nextId))
-        tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(16)
+        tracks=next.sortedByDescending { it.score }.distinctBy { Triple(it.blob.x.toInt()/4,it.blob.y.toInt()/4,it.hits.coerceAtMost(3)) }.take(3)
         val winner=tracks.filter { (activeId==0L || it.id==activeId) && it.time==now && it.hits>=3 && it.independent>=2 && hypot(it.blob.x-it.startX,it.blob.y-it.startY)>=18f*scale && it.score>=48f && (!bodyValid || hypot(it.blob.x-bodyX,it.blob.y-bodyY)>35f*scale) }.maxByOrNull { it.score }
         if(debug) {
             for(q in candidates) debugRows.append("candidate,${q.x},${q.y},${q.radius},${q.pixels},,,,${q.quality},${if(q==winner?.blob) "selected" else "not_selected"}\n")

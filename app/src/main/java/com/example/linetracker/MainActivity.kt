@@ -123,7 +123,7 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply { text = "공 출발 영역 그리기"; setOnClickListener { openSelector("launch") } })
         pitchOnly = CheckBox(this).apply { text = "투구 후보 구간만 영상 및 사진 저장 (실험, 기본 OFF)"; isChecked = false }
         root.addView(pitchOnly)
-        deepCheck=CheckBox(this).apply { text="3.4.3 정밀 분석 (원본 영상, 후보 기록)"; isChecked=true }; root.addView(deepCheck)
+        deepCheck=CheckBox(this).apply { text="3.4.4 경량 성능 기록 (FPS, 좌표, 도착 예측)"; isChecked=true }; root.addView(deepCheck)
         cvCheck=CheckBox(this).apply { text="OpenCV + Kalman 실험 모드"; isChecked=true }; root.addView(cvCheck)
         battingGate = CheckBox(this).apply { text = "일반 모드에서만 타격 화면 제한"; isChecked = false }
         root.addView(battingGate)
@@ -174,7 +174,7 @@ class MainActivity : Activity() {
         overlayCheck = CheckBox(this).apply { text = "실시간 추적 표시 (접근성 필요; 학습 원본에 표시가 섞일 수 있음)"; isChecked = false }
         analysisCheck = CheckBox(this).apply { text = "포인터/영역/궤적 포함 분석 JPEG 저장"; isChecked = true }
         root.addView(overlayCheck); root.addView(analysisCheck)
-        videoCheck = CheckBox(this).apply { text = "MP4 분석 영상 저장 (수집 시작/중지 연동)"; isChecked = true }
+        videoCheck = CheckBox(this).apply { text = "MP4 분석 영상 저장 (수집 시작/중지 연동)"; isChecked = false }
         fpsCheck = CheckBox(this).apply { text = "영상 30fps (기본 15fps)"; isChecked = false }
         root.addView(videoCheck); root.addView(fpsCheck)
         root.addView(Button(this).apply { text = "투구 결과 수동 기록"; setOnClickListener { recordLabel() } })

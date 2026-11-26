@@ -168,9 +168,9 @@ class CaptureService : Service() {
         pitcher = intent?.getStringExtra("pitcher") ?: ""
         session = java.util.UUID.randomUUID().toString()
         deep = intent?.getBooleanExtra("deepDebug",true) ?: true
-        tracker.debug=deep
+        tracker.debug=false
         tracker.useOpenCv=intent?.getBooleanExtra("useOpenCv",true) ?: true
-        if(deep) { pitchOnly=false; recordVideo=true; showOverlay=false; savePictures=false; videoFps=30; bitrate=4000000 }
+        if(deep) { pitchOnly=false; showOverlay=false; savePictures=false; videoFps=30; bitrate=4000000 }
         tapX = intent?.getIntExtra("tapX", 50) ?: 50
         tapY = intent?.getIntExtra("tapY", 50) ?: 50
         region = intent?.getIntArrayExtra("region") ?: region
@@ -178,7 +178,7 @@ class CaptureService : Service() {
         timingMs = (intent?.getIntExtra("timingMs", 0) ?: 0).coerceIn(-150, 150)
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
-            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.3").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
+            val settings=org.json.JSONObject().put("session",session).put("side",side).put("pitch_arm",pitchArm).put("pitch_form",pitchForm).put("roi",org.json.JSONArray(region.toList())).put("target",org.json.JSONArray(target.toList())).put("launch",org.json.JSONArray(tracker.launch.toList())).put("video_fps_target",videoFps).put("overlay",false).put("version","3.4.4").put("opencv_requested",tracker.useOpenCv).put("raw_only",true).put("batting_gate_bypassed",true)
             debugWrite(dir,"settings.json", "",settings.toString()+"\n")
         }
         startForeground(1, notification("화면 캡처 준비 중"))
@@ -282,7 +282,7 @@ class CaptureService : Service() {
             val a=tracker.arrival
             debugWrite(dir,"arrival.csv","frame,image_ns,track_id,eta_ms,x,y,radius,observed_contact,strike_probability,decision", "$prefix${tracker.trackId},${a?.ms ?: ""},${a?.x ?: ""},${a?.y ?: ""},${a?.radius ?: ""},${tracker.contact},,${if(a!=null) "FORECAST_ONLY" else "WAIT"}\n")
             debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes,tracker_enabled,green_pixels,scene_changed,engine", "$prefix${now-sessionStart},${scene.batting},${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()},${batting && !scene.cut},${scene.green},${scene.changed},${tracker.engine}\n")
-            if(batting && !scene.cut) {
+            if(tracker.debug && batting && !scene.cut) {
                 debugWrite(dir,"candidates.csv","frame,image_ns,stage,x,y,radius,pixels,bw,bh,changed,quality,result",tracker.debugRows.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
                 debugWrite(dir,"tracks.csv","frame,image_ns,id,x,y,radius,vx,vy,hits,independent,score,track_time,selected",tracker.debugTracks.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
             }
@@ -300,13 +300,13 @@ class CaptureService : Service() {
         if (validContact) pitchUntil = minOf(pitchUntil, now+100L)
         
         if (now - lastPointTime > 70L || !tracker.confirmed) trail.clear()
-        if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 30) trail.removeAt(0) }
+        if (point != null && tracker.confirmed) { trail.add(point); lastPointTime = now; if (trail.size > 8) trail.removeAt(0) }
         val trace = TraceFrame(image.width,image.height,region,target,point,trail.toList(),"${if(now<=pitchUntil) "PITCH" else "WAIT"} / ${tracker.status} / ${actualFps}fps",validContact,frames,tracker.candidateCount,tracker.launch,if(batting && tracker.confirmed) tracker.predictedPoint else null,batting && tracker.confirmed)
         if (showOverlay && now-lastOverlay >= 16L) {
             lastOverlay=now
             mainHandler.post { if (!stopped) AutoTapService.instance?.showTrace(trace) }
         }
-        if (now - lastSample >= 16L) {
+        if (point != null && now - lastSample >= 16L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")
             if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
