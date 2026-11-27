@@ -98,6 +98,12 @@ class CaptureService : Service() {
     }
     private val samples = StringBuilder()
     private var lastAnalysis = 0L
+    private var lastAnalyzedAt = 0L
+    private var pitchId = 0L
+    private var pitchSegmentActive = false
+    private var pitchLastSeen = 0L
+    private var pitchStartAt = 0L
+    private var pitchFrame = 0
     private var lastVideo = 0L
     @Volatile private var videoFailed = false
     @Volatile private var retryAt = 0L
@@ -189,6 +195,11 @@ class CaptureService : Service() {
         pitchArm = intent?.getStringExtra("pitchArm") ?: "right"
         pitcher = intent?.getStringExtra("pitcher") ?: ""
         session = java.util.UUID.randomUUID().toString()
+        lastAnalyzedAt = 0L
+        pitchId = 0L
+        pitchSegmentActive = false
+        pitchLastSeen = 0L
+        pitchFrame = 0
         deep = intent?.getBooleanExtra("deepDebug",true) ?: true
         tracker.debug=false
         tracker.useOpenCv=intent?.getBooleanExtra("useOpenCv",true) ?: true
@@ -288,6 +299,8 @@ class CaptureService : Service() {
         captureCount++
         if (now-lastAnalysis < 16L) return
         lastAnalysis = now
+        val dtMs = if (lastAnalyzedAt == 0L) 0L else (now - lastAnalyzedAt).coerceIn(0L, 1000L)
+        lastAnalyzedAt = now
         val scene = battingDetector.observe(image)
         batting = deep || !battingGate || scene.batting
         if (scene.cut || !batting) {
@@ -299,6 +312,21 @@ class CaptureService : Service() {
         // Negative timing is handled by predictive contact inside BallTracker.
         // Positive timing delays the accessibility gesture after observed contact.
         if (hit && !collectOnly) scheduleTap(timingMs.coerceAtLeast(0).toLong())
+        val observedPoint = tracker.point
+        if (observedPoint != null && tracker.confirmed) {
+            if (!pitchSegmentActive) {
+                pitchId++
+                pitchSegmentActive = true
+                pitchStartAt = now
+                pitchFrame = 0
+            }
+            pitchLastSeen = now
+            pitchFrame++
+        } else if (pitchSegmentActive && now - pitchLastSeen > 350L) {
+            diagnostic("pitch end id=$pitchId frames=$pitchFrame duration_ms=${now-pitchStartAt}")
+            pitchSegmentActive = false
+            pitchFrame = 0
+        }
         frames++
         if(deep) {
             val dir=java.io.File(filesDir,"training/$session").apply { mkdirs() }
@@ -306,7 +334,7 @@ class CaptureService : Service() {
             val p=tracker.point; val pred=tracker.predictedPoint
             val a=tracker.arrival
             debugWrite(dir,"arrival.csv","frame,image_ns,track_id,eta_ms,x,y,radius,observed_contact,strike_probability,decision", "$prefix${tracker.trackId},${a?.ms ?: ""},${a?.x ?: ""},${a?.y ?: ""},${a?.radius ?: ""},${tracker.contact},,${if(a!=null) "FORECAST_ONLY" else "WAIT"}\n")
-            debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes,tracker_enabled,green_pixels,scene_changed,engine", "$prefix${now-sessionStart},${scene.batting},${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()},${batting && !scene.cut},${scene.green},${scene.changed},${tracker.engine}\n")
+            debugWrite(dir,"frames.csv","frame,image_ns,elapsed_ms,pitch_id,pitch_frame,dt_ms,fps,batting,cut,x,y,radius,pred_x,pred_y,pred_radius,track_id,confidence_score,confirmed,vx_px_ms,vy_px_ms,ax_px_ms2,ay_px_ms2,radius_rate,tracker_ms,debug_dropped,heap_bytes,tracker_enabled,green_pixels,scene_changed,engine", "$prefix${now-sessionStart},${if(pitchSegmentActive) pitchId else 0},${if(pitchSegmentActive) pitchFrame else 0},$dtMs,${if(dtMs>0) 1000f/dtMs else 0f},${scene.batting},${scene.cut},${p?.x ?: ""},${p?.y ?: ""},${p?.radius ?: ""},${pred?.x ?: ""},${pred?.y ?: ""},${pred?.radius ?: ""},${tracker.trackId},${tracker.confidence},${tracker.confirmed},${tracker.velocityX},${tracker.velocityY},${tracker.ax},${tracker.ay},${tracker.radiusRate},${if(batting && !scene.cut) tracker.processingMs else 0f},$debugDropped,${Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory()},${batting && !scene.cut},${scene.green},${scene.changed},${tracker.engine}\n")
             if(tracker.debug && batting && !scene.cut) {
                 debugWrite(dir,"candidates.csv","frame,image_ns,stage,x,y,radius,pixels,bw,bh,changed,quality,result",tracker.debugRows.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
                 debugWrite(dir,"tracks.csv","frame,image_ns,id,x,y,radius,vx,vy,hits,independent,score,track_time,selected",tracker.debugTracks.lineSequence().filter{it.isNotEmpty()}.joinToString("") { prefix+it+"\n" })
@@ -334,10 +362,10 @@ class CaptureService : Service() {
         if (point != null && now - lastSample >= 16L) {
             lastSample = now
             val file = java.io.File(filesDir, "samples_v4.csv")
-            if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,frame,elapsed_ms,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled\n")
+            if (!file.exists()) file.appendText("session,game_mode,side,pitch_form,pitch_arm,pitcher,pitch_id,pitch_frame,frame,elapsed_ms,dt_ms,fps,image_timestamp_ns,width,height,roi,target,candidate_status,contact_candidate,x,y,radius,candidates,contact,overlay_enabled,pitch_type,strike_label,result_label\n")
             val status = tracker.status.replace('"', '\'').replace('\n', ' ')
             val safePitcher = pitcher.replace('"', '\'').replace('\n', ' ').replace('\r', ' ')
-            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",$frames,${now-sessionStart},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",${hit && tracker.confirmed},${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay\n")
+            samples.append("$session,$gameMode,$side,$pitchForm,$pitchArm,\"$safePitcher\",${if(pitchSegmentActive) pitchId else 0},${if(pitchSegmentActive) pitchFrame else 0},$frames,${now-sessionStart},$dtMs,${if(dtMs>0) 1000f/dtMs else 0f},${image.timestamp},${image.width},${image.height},${region.joinToString(";")},${target.joinToString(";")},\"$status\",${hit && tracker.confirmed},${point?.x ?: ""},${point?.y ?: ""},${point?.radius ?: ""},${tracker.candidateCount},${validContact},$showOverlay,,,\n")
             if (samples.length >= 32768) { file.appendText(samples.toString()); samples.clear() }
         }
         val pictureDue = savePictures && (!pitchOnly || now <= pitchUntil) && now-lastPicture >= 150L && savedPictures < 300
