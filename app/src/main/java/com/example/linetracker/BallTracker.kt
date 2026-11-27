@@ -35,10 +35,11 @@ class BallTracker {
     private var rgb = ByteArray(0)
     private var candidateTime = 0L
     var candidateCount = 0; private set
+    var rawCandidateCount = 0; private set
     var contact = false; private set
     private var previous: Blob? = null
     var launch = intArrayOf(42,30,58,50)
-    fun reset() { motion.reset(); filterId=0L; arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
+    fun reset() { motion.reset(); filterId=0L; arrival=null; tracks=emptyList(); activeId=0; candidateCount=0; rawCandidateCount=0; status="대기"; frameIndex=0; bodyValid=false; previous=null; predictedPoint=null; confidence=0; confirmed=false; streak=0; candidateTime=0L; priorMask=null; lastCandidates=emptyList(); point=null; missing=0; vx=0f; vy=0f; ax=0f; ay=0f; radiusRate=0f; previousTime=0L; locked=false; contact=false }
 
     private var priorMask: BooleanArray? = null
     private var roiKey = ""
@@ -179,7 +180,9 @@ class BallTracker {
             val bw = maxX - minX + 1
             val bh = maxY - minY + 1
             if(debug) debugRows.append("coarse,$bx,$by,${max(bw,bh)*step/2f},$tail,$bw,$bh,$changed,,${if(changed>=1 && changed.toFloat()/tail>=.08f && tail in 1..450 && max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)<=2.5f && tail.toFloat()/(bw*bh)>.30f) "pass" else listOfNotNull(if(changed<1 || changed.toFloat()/tail<.08f) "motion" else null, if(tail !in 1..450) "size" else null, if(max(bw,bh).toFloat()/min(bw,bh).coerceAtLeast(1)>2.5f) "aspect" else null, if(tail.toFloat()/(bw*bh)<=.30f) "density" else null).joinToString("|")}\n")
-            if (changed >= 1 && changed.toFloat() / tail >= .08f && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) <= 2.5f &&
+            val motionRatio = changed.toFloat() / tail
+            val motionOk = if (useOpenCv) changed >= 2 && motionRatio >= .12f else changed >= 1 && motionRatio >= .08f
+            if (motionOk && tail in 1..450 && max(bw, bh).toFloat() / min(bw, bh).coerceAtLeast(1) <= 2.5f &&
                 tail.toFloat() / (bw * bh) > .30f) {
                 coarse.add(Blob(l + sumX.toFloat() / tail * step,
                     t + sumY.toFloat() / tail * step, max(bw, bh) * step / 2f, tail, (changed.toFloat()/tail * 0.5f + tail.toFloat()/(bw*bh)*0.5f)))
@@ -190,7 +193,7 @@ class BallTracker {
         val bodyDx=if(bodyValid && bodyWeight>0) newBodyX-bodyX else 0f
         val bodyDy=if(bodyValid && bodyWeight>0) newBodyY-bodyY else 0f
         if(bodyWeight>0) { bodyX=newBodyX; bodyY=newBodyY; bodyValid=true }
-        candidateCount = coarse.size
+        rawCandidateCount = coarse.size
         // Bound expensive refinement. Prefer predicted location when a track exists.
         val prior = previous
         val age = (now-previousTime).coerceIn(0L,260L).toFloat()
@@ -230,7 +233,13 @@ class BallTracker {
         }
         for(q in tracks.take(3)) { val dt=(now-q.time).coerceIn(0L,200L); scan((q.blob.x+q.vx*dt).toInt(),(q.blob.y+q.vy*dt).toInt(),24) }
         if(tracks.isEmpty() || frameIndex%3==0) scan((launch[0]+launch[2])*w/200,(launch[1]+launch[3])*h/200,40)
-        val candidates=(refined+extra).distinctBy { (it.x.toInt()/3)*10000+it.y.toInt()/3 }.sortedByDescending { q -> q.quality - if(prior!=null) min(1f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }.take(8)
+        val ranked=(refined+extra).distinctBy { (it.x.toInt()/3)*10000+it.y.toInt()/3 }
+            .sortedByDescending { q -> q.quality - if(prior!=null) min(1f,hypot(q.x-expectedX,q.y-expectedY)/max(30f,w*.06f)) else 0f }
+        // Keep only a few plausible hypotheses. When a track exists, candidates
+        // far from its FPS-adjusted prediction are almost always UI noise.
+        val predictionGate = max(120f*scale, hypot(vx,vy)*age*2f + 70f*scale)
+        val predicted = if (prior != null) ranked.filter { hypot(it.x-expectedX,it.y-expectedY) <= predictionGate }.take(4) else ranked.take(4)
+        val candidates = if (predicted.isNotEmpty()) predicted else ranked.take(2)
         candidateCount=candidates.size
         val prev=previous
         val dtTrack=(now-previousTime).coerceIn(1L,260L).toFloat()
