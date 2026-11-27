@@ -1,0 +1,19 @@
+name: Train ball classifier
+
+on:
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install tensorflow pillow numpy
+      - run: python train_ball_model.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ball-model-tflite
+          path: output/model.tflite
