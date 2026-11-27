@@ -197,6 +197,7 @@ class BallTracker {
         // Bound expensive refinement. Prefer predicted location when a track exists.
         val prior = previous
         val age = (now-previousTime).coerceIn(0L,260L).toFloat()
+        val scale = w/2000f
         val expectedX = (prior?.x ?: 0f)+vx*age+0.5f*ax*age*age
         val expectedY = (prior?.y ?: 0f)+vy*age+0.5f*ay*age*age
         val refined = coarse.asSequence().filter { it.radius <= max(16f*w/2000f,(prior?.radius ?: 0f)*1.8f) }
@@ -238,12 +239,11 @@ class BallTracker {
         // Keep only a few plausible hypotheses. When a track exists, candidates
         // far from its FPS-adjusted prediction are almost always UI noise.
         val predictionGate = max(120f*scale, hypot(vx,vy)*age*2f + 70f*scale)
-        val predicted = if (prior != null) ranked.filter { hypot(it.x-expectedX,it.y-expectedY) <= predictionGate }.take(4) else ranked.take(4)
-        val candidates = if (predicted.isNotEmpty()) predicted else ranked.take(2)
+        val predictedCandidates = if (prior != null) ranked.filter { hypot(it.x-expectedX,it.y-expectedY) <= predictionGate }.take(4) else ranked.take(4)
+        val candidates = if (predictedCandidates.isNotEmpty()) predictedCandidates else ranked.take(2)
         candidateCount=candidates.size
         val prev=previous
         val dtTrack=(now-previousTime).coerceIn(1L,260L).toFloat()
-        val scale=w/2000f
         val next=ArrayList<Track>()
         for(tr in tracks) {
             val dt=(now-tr.time).toFloat()
@@ -313,7 +313,7 @@ class BallTracker {
             return hypot(q.x - nearX, q.y - nearY) <= q.radius
         }
         var crossed = false
-        var predicted = false
+        var predictedContact = false
         val dt = now - previousTime
         if (prev != null && dt in 1..160 && hypot(selected.x-prev.x,selected.y-prev.y)<max(30f,dt*4f)) {
             if (!touches(prev)) {
@@ -332,7 +332,7 @@ class BallTracker {
                     for (ms in 10..(-timingMs).coerceIn(0, 150) step 10) {
                         val ahead = Blob(selected.x + vx * ms + .5f*ax*ms*ms, selected.y + vy * ms + .5f*ay*ms*ms,
                             (selected.radius+radiusRate*ms).coerceAtLeast(.5f), selected.pixels)
-                        if (touches(ahead)) { predicted = true; break }
+                    if (touches(ahead)) { predictedContact = true; break }
                     }
                 }
             }
@@ -375,7 +375,7 @@ class BallTracker {
             locked = true
             lastTrigger = now
             count++
-            status = if (predicted && !contact) "예측 타격 ${count}회" else "접촉 타격 ${count}회"
+            status = if (predictedContact && !contact) "예측 타격 ${count}회" else "접촉 타격 ${count}회"
         } else {
             status = "공 후보 ${candidates.size} · 추적 (${selected.x.toInt()}, ${selected.y.toInt()})" +
                 (if (contact) " · 접촉" else "") + " · 신뢰 $confidence · ${if(confirmed) "확정" else "검증"}"
